@@ -50,24 +50,27 @@ jobs:
 
       - name: Build
         run: |
-          make -j$(nproc) IGNORE_ERRORS=n m -i 2>&1 | tee build.log | tail -50
-          ./staging_dir/host/bin/ccache -s 2>/dev/null || true
+          make -j$(nproc) BUILD_LOG=1
+          ls -lh bin/targets/*/*/ || true
 
       - name: Show target images
+        if: always()
         run: |
           ls -lh bin/targets/*/*/ || true
           cat bin/targets/*/*/profiles.json 2>/dev/null | head -40 || true
 
       - name: Upload images
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-nokia-g2425g-a
           path: bin/targets/*/*/
           retention-days: 14
 
-      - name: Upload build log on failure
-        if: failure()
+      - name: Upload build log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: build.log
+          path: logs/
+          retention-days: 14
