@@ -1,0 +1,246 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+// Nokia G-2425G-A (Airtel) — EN7528, MT7603 (2.4G) + MT7663 (5G).
+// Hardware is the Airtel-branded DASAN H660GM-A family, but flash layout
+// differs from the Dasan units; partition map from live NAND dump
+// (see PHASE2-FINDINGS.md in this project).
+
+#include "en7528.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+
+/ {
+	model = "Nokia G-2425G-A";
+	compatible = "nokia,g-2425g-a", "dasan,h660gm-a-airtel", "econet,en7528";
+
+	aliases {
+		led-boot = &led_power;
+		led-failsafe = &led_power;
+		led-running = &led_power;
+		led-upgrade = &led_power;
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0x00000000 0x10000000>;
+	};
+
+	chosen {
+		stdout-path = "/serial@1fbf0000:115200";
+		linux,usable-memory-range = <0x00020000 0x0ffe0000>;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		/* GPIO numbers not yet confirmed on this unit; keep power LED
+		 * placeholder wired to the Dasan H660GM-A map until verified
+		 * (stock firmware drives LEDs via proprietary tcledctrl). */
+		led_power: pwr {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_POWER;
+			gpios = <&pinctrl 29 GPIO_ACTIVE_LOW>;
+		};
+	};
+
+	keys {
+		compatible = "gpio-keys";
+		poll-interval = <100>;
+
+		key-reset {
+			label = "reset";
+			gpios = <&pinctrl 0 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_RESTART>;
+		};
+	};
+
+	virtual_flash {
+		compatible = "mtd-concat";
+		devices = <&rootA &stock_rootfs>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "ubi";
+				reg = <0x0 0x0>;
+			};
+		};
+	};
+};
+
+&pcie0 {
+	status = "okay";
+};
+
+&pcie1 {
+	status = "okay";
+};
+
+&slot0 {
+	status = "okay";
+
+	wifi@0,0 {
+		compatible = "mediatek,mt76";
+		reg = <0x0000 0 0 0 0>;
+		nvmem-cells = <&macaddr_ri 0>;
+		nvmem-cell-names = "mac-address";
+		ieee80211-freq-limit = <2400000 2500000>;
+	};
+};
+
+&slot1 {
+	status = "okay";
+
+	wifi@0,0 {
+		compatible = "mediatek,mt76";
+		reg = <0x0000 0 0 0 0>;
+		nvmem-cells = <&macaddr_ri 1>;
+		nvmem-cell-names = "mac-address";
+		ieee80211-freq-limit = <5000000 6000000>;
+	};
+};
+
+&gmac0 {
+	status = "okay";
+	nvmem-cells = <&macaddr_ri 0>;
+	nvmem-cell-names = "mac-address";
+};
+
+&switch {
+	status = "okay";
+};
+
+&gsw_port1 {
+	status = "okay";
+	label = "lan1";
+};
+
+&gsw_port2 {
+	status = "okay";
+	label = "lan2";
+};
+
+&gsw_port3 {
+	status = "okay";
+	label = "lan3";
+};
+
+&gsw_port4 {
+	status = "okay";
+	label = "lan4";
+};
+
+&nand {
+	status = "okay";
+	econet,bmt;
+	econet,bbt-table-size = <250>;
+
+	partitions: partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		partition@0 {
+			label = "bootloader";
+			reg = <0x0 0x40000>;
+			read-only;
+		};
+
+		partition@40000 {
+			label = "romfile";
+			reg = <0x40000 0x40000>;
+			read-only;
+		};
+
+		partition@80000 {
+			label = "image0";
+			reg = <0x80000 0x2200000>;
+		};
+
+		linux_kernel: partition@2280000 {
+			label = "linux_kernel";
+			reg = <0x2280000 0x400000>;
+		};
+
+		/* Concatenated with stock "rootfs" partition to form the UBI volume */
+		rootA: partition@2680000 {
+			label = "tclinux_rootfs";
+			reg = <0x2680000 0x1e00000>;
+		};
+
+		stock_rootfs: partition@4480000 {
+			label = "rootfs";
+			reg = <0x4480000 0x1e20000>;
+		};
+
+		partition@6260000 {
+			label = "image_oflt";
+			reg = <0x6260000 0xf00000>;
+		};
+
+		partition@7160000 {
+			label = "config";
+			reg = <0x7160000 0x800000>;
+		};
+
+		partition@7960000 {
+			label = "log";
+			reg = <0x7960000 0xc00000>;
+		};
+
+		partition@8560000 {
+			label = "extfs";
+			reg = <0x8560000 0x600000>;
+		};
+
+		partition@8b60000 {
+			label = "bosa";
+			reg = <0x8b60000 0x40000>;
+		};
+
+		partition@8ba0000 {
+			label = "flag";
+			reg = <0x8ba0000 0x40000>;
+		};
+
+		partition@8be0000 {
+			label = "flagback";
+			reg = <0x8be0000 0x40000>;
+		};
+
+		ri: partition@8c20000 {
+			label = "ri";
+			reg = <0x8c20000 0x40000>;
+			read-only;
+
+			nvmem-layout {
+				compatible = "fixed-layout";
+				#address-cells = <1>;
+				#size-cells = <1>;
+
+				/* MAC at offset 0x3e inside the ri partition
+				 * (verified against live dump). */
+				macaddr_ri: macaddr@3e {
+					compatible = "mac-base";
+					reg = <0x3e 0x6>;
+					#nvmem-cell-cells = <1>;
+				};
+			};
+		};
+
+		partition@8c60000 {
+			label = "riback";
+			reg = <0x8c60000 0x40000>;
+			read-only;
+		};
+
+		partition@8ca0000 {
+			label = "data";
+			reg = <0x8ca0000 0x6e00000>;
+		};
+	};
+};
