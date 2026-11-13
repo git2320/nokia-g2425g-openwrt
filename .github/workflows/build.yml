@@ -39,11 +39,22 @@ jobs:
           cp -v port/files/target/linux/econet/base-files/lib/upgrade/platform.sh \
              target/linux/econet/base-files/lib/upgrade/
 
+      - name: Restore ccache + downloads cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ccache
+            dl/
+          key: ${{ runner.os }}-openwrt-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-ccache-
+
       - name: Configure
         run: |
           cp port/config.seed .config
+          echo "CONFIG_CCACHE=y" >> .config
           make defconfig
-          grep -E "^CONFIG_TARGET_DEVICE|CONFIG_PACKAGE_kmod-mt7" .config || true
+          grep -E "^CONFIG_CCACHE|^CONFIG_TARGET_DEVICE" .config || true
 
       - name: Download sources
         run: make -j$(nproc) download
@@ -52,6 +63,10 @@ jobs:
         run: |
           make -j$(nproc) BUILD_LOG=1
           ls -lh bin/targets/*/*/ || true
+
+      - name: Save ccache stats
+        if: always()
+        run: ccache -s 2>/dev/null || true
 
       - name: Show target images
         if: always()
