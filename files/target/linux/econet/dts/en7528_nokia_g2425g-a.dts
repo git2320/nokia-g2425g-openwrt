@@ -55,21 +55,10 @@
 		};
 	};
 
-	virtual_flash {
-		compatible = "mtd-concat";
-		devices = <&rootA &stock_rootfs>;
-
-		partitions {
-			compatible = "fixed-partitions";
-			#address-cells = <1>;
-			#size-cells = <1>;
-
-			partition@0 {
-				label = "ubi";
-				reg = <0x0 0x0>;
-			};
-		};
-	};
+	/* UBI root lives only in the tclinux_rootfs area of the linux slot
+	 * (0x2680000, 30 MB). The stock "rootfs" partition is deliberately
+	 * NOT part of it: keeping mtd4 intact preserves the stock squashfs
+	 * so the image0 fallback slot stays bootable. */
 };
 
 &pcie0 {
@@ -166,9 +155,11 @@
 			reg = <0x2280000 0x400000>;
 		};
 
-		/* Concatenated with stock "rootfs" partition to form the UBI volume */
-		rootA: partition@2680000 {
-			label = "tclinux_rootfs";
+		/* UBI rootfs volume — inside the linux slot, right after the
+		 * 4 MB kernel area. Kept separate from the stock "rootfs"
+		 * partition (see comment above). */
+		ubi: partition@2680000 {
+			label = "ubi";
 			reg = <0x2680000 0x1e00000>;
 		};
 
