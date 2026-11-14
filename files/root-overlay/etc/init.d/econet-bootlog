@@ -1,0 +1,63 @@
+#!/bin/sh /etc/rc.common
+# Persist boot diagnostics to the stock "log" mtd partition.
+#
+# Why: this board has no usable serial console and the v2 image came up but
+# was unreachable on both Ethernet and WiFi, so the only way to learn *why*
+# is to write the kernel/userspace state to flash from OpenWrt, let the
+# bootloader revert to stock (we never commit during testing), and read the
+# partition back over stock telnet:
+#
+#   dd if=/dev/mtd7 bs=128k count=8 | strings | less
+#
+# An early snapshot is written at ~10s (catches probe failures/panics in
+# dmesg) and a settled snapshot at ~80s (network up). The final flash
+# content holds both, early first.
+
+START=11
+
+snapshot() {
+	{
+		echo "=== OpenWrt boot snapshot ($(date)) uptime=$(cut -d' ' -f1 /proc/uptime) ==="
+		echo "--- dmesg ---"
+		dmesg
+		echo "--- cmdline ---"
+		cat /proc/cmdline
+		echo "--- mtd ---"
+		cat /proc/mtd
+		echo "--- links ---"
+		ip -o link 2>/dev/null
+		echo "--- netdev state ---"
+		for n in /sys/class/net/*; do
+			echo "## ${n##*/}: operstate=$(cat $n/operstate 2>/dev/null) carrier=$(cat $n/carrier 2>/dev/null) addr=$(cat $n/address 2>/dev/null) speed=$(cat $n/speed 2>/dev/null) device=$(readlink $n/device 2>/dev/null)"
+		done
+		echo "--- counters ---"
+		grep -H . /sys/class/net/*/statistics/rx_packets /sys/class/net/*/statistics/tx_packets 2>/dev/null
+		echo "--- interrupts ---"
+		grep -iE 'qdma|gsw|eth' /proc/interrupts 2>/dev/null
+		echo "--- modules ---"
+		lsmod 2>/dev/null
+		echo "--- uci network ---"
+		uci show network 2>/dev/null
+		echo "--- wireless ---"
+		uci show wireless 2>/dev/null
+		iw dev 2>/dev/null
+		echo "--- logread ---"
+		logread 2>/dev/null
+	} 2>&1
+}
+
+boot() {
+	# The stock "log" partition; the OpenWrt mtd utility erases it first.
+	[ -n "$(grep '"log"' /proc/mtd 2>/dev/null)" ] || exit 0
+
+	sleep 10
+	snapshot > /tmp/.bootlog.early
+	mtd write /tmp/.bootlog.early log 2>/dev/null
+
+	sleep 70
+	snapshot > /tmp/.bootlog.late
+	cat /tmp/.bootlog.early /tmp/.bootlog.late > /tmp/.bootlog.all
+	mtd write /tmp/.bootlog.all log 2>/dev/null
+}
+
+start() { :; }

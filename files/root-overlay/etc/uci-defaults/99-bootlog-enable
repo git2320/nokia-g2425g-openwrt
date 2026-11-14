@@ -1,0 +1,4 @@
+#!/bin/sh
+# Enable the boot-log persistence service on first boot.
+/etc/init.d/econet-bootlog enable
+exit 0

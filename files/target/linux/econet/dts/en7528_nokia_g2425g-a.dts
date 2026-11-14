@@ -99,28 +99,26 @@
 	nvmem-cell-names = "mac-address";
 };
 
-&switch {
-	status = "okay";
-};
-
-&gsw_port1 {
-	status = "okay";
-	label = "lan1";
-};
-
-&gsw_port2 {
-	status = "okay";
-	label = "lan2";
-};
-
-&gsw_port3 {
-	status = "okay";
-	label = "lan3";
-};
-
-&gsw_port4 {
-	status = "okay";
-	label = "lan4";
+/*
+ * Ethernet: use the econet-eth driver's "dumb switch" mode instead of DSA.
+ *
+ * The driver bridges the on-die MT7530 in hardware (all LAN ports <-> CPU
+ * port 6 <-> gmac0) whenever its register window covers the switch block.
+ * The v2 image used the DSA path (switch node enabled) and ended up with no
+ * usable LAN at all: PHYs negotiated link, but no frames were forwarded,
+ * which is consistent with the switch being left half-initialised after a
+ * probe failure. Dumb-switch mode is the code path that shipped in the
+ * original EN7528 "basic ethernet support" and is known to work on the
+ * DASAN H660GM-A family this board belongs to. It removes the DSA driver
+ * (and its reset/PHY probing) from the picture entirely; all four sockets
+ * appear as one eth0.
+ *
+ * Keep &switch disabled so the MT7530 DSA driver does not bind, and widen
+ * the ethernet register window so has_switch_regs is true (0x10000 covers
+ * both the frame engine at 0x1fb50000 and the switch at 0x1fb58000).
+ */
+&ethernet {
+	reg = <0x1fb50000 0x10000>;
 };
 
 &nand {

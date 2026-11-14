@@ -4,16 +4,22 @@
 # The stock CFE boots a newly flashed image a limited number of times and,
 # if userspace never "commits" it (stock firmware calls swdl_commit which
 # writes the flag partition), marks the image invalid and falls back to the
-# other slot. Without this script a *working* OpenWrt would still be
-# reverted to stock after a few boots (observed on hardware 2026-11-14).
+# other slot.
+#
+# DELIBERATELY NOT RUN AT BOOT while the image is unproven: with no serial
+# console, CFE's boot-fail auto-revert is our only guaranteed recovery. If
+# this script committed on the first boot of a broken image we would be
+# locked into an unreachable OpenWrt. Once the box is reachable (Ethernet
+# or the G2425G-Recovery WiFi), run:
+#
+#     /etc/init.d/econet-commit start        # or: bootflag-commit
+#
+# which sets commit=1, next_active=1, image1_valid=1, boot_fail_num=0 so the
+# loader keeps booting OpenWrt.
 #
 # Flag layout (64-byte struct at offset 0 of "flag"/"flagback", little endian):
 #   u32 commit, next_active, image0_valid, image1_valid, boot_fail_num, active
 #   then two 16-byte version strings (image0, image1)
-#
-# Policy: only commit when we are running the OpenWrt (slot 1) image, set
-# commit=1 so CFE treats slot 1 as the committed slot, mark image1 valid and
-# reset boot_fail_num. Both flag copies are written (flag + flagback).
 
 START=98
 
@@ -50,9 +56,10 @@ commit_once() {
 }
 
 boot() {
-	# Give the system a moment to settle before touching flash.
-	sleep 5
-	commit_once
+	# Intentionally empty; see the header. Manual commit only.
+	:
 }
 
-start() { :; }
+start() {
+	commit_once
+}

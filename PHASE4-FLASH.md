@@ -168,3 +168,71 @@ v3 changes (built on GitHub Actions only):
 - `/etc/init.d/econet-commit` — boot-flag commit service (see above);
 - `/etc/uci-defaults/99-commit-enable` — enable the service at first boot.
 
+## Update 2026-11-14 (later) — v4: dumb-switch Ethernet + flash telemetry
+
+### Why v4 abandons DSA for now
+
+The v2 DTB was verified out of the flashed TRX (decompressed kernel, FDT at
+the tail): `gmac0` okay with a 1G fixed-link, `ethernet-switch@1fb58000`
+okay, ports 1-4 okay with PHYs 9-12 and CPU port 6 -> `gmac0`. Both drivers
+were in the image (`kmod-econet-eth`, `CONFIG_NET_DSA_MT7530_MMIO=y`) and the
+board compatible matches `02_network`, so the failure is at runtime, not DTS
+or packaging.
+
+The DSA path resets the switch and force-links every port down before it
+verifies the switch (`mt7531_setup_common` -> `mt7530_fdb_cmd` with a timeout,
+then `mt7530_setup_vlan0`). If any step fails, the switch is left
+half-initialised with no forwarding, which matches the observed symptoms
+exactly (PHY link up from hardware autoneg, zero L2 traffic).
+
+The board now uses the econet-eth driver's **dumb-switch mode**: widen the
+ethernet register window to cover the switch block (`reg = <0x1fb50000
+0x10000>`) and leave `&switch` disabled. The driver then programs PMCR for
+ports 5/6 and MFC (CPU port 6) and the on-die MT7530 bridges all four LAN
+sockets to `gmac0` in hardware, with no DSA involvement. This is the path
+from the original upstream "en7528: add basic ethernet support" commit,
+which is what DASAN H660GM-A users actually used over Ethernet. The four
+sockets appear as one `eth0`, which `02_network` puts in `br-lan`.
+
+### Telemetry without a console
+
+`/etc/init.d/econet-bootlog` writes two snapshots to the stock `log`
+partition (mtd7, 0xC00000 @ 0x7960000; OpenWrt label `log`):
+
+- ~10 s after boot: dmesg, cmdline, mtd table, `ip link`, per-netdev
+  operstate/carrier/MAC/speed, rx/tx counters, qdma/gsw interrupts, lsmod;
+- ~80 s after boot: the same plus `uci show network|wireless`, `iw dev`,
+  `logread`. Both snapshots end up in flash (early first).
+
+Read it back **from stock** (the bootloader reverts on its own because we do
+not commit during testing):
+
+```
+dd if=/dev/mtd7 bs=128k count=16 2>/dev/null | strings | less
+```
+
+### Commit policy change (important)
+
+v3 enabled `econet-commit` at boot. That is dangerous while the image is
+unproven: committing on a boot that is unreachable would remove CFE's
+auto-revert and strand the device (no serial). v4 therefore does **not**
+enable the service. Once the box is reachable (Ethernet or the
+`G2425G-Recovery` SSID), run:
+
+```
+bootflag-commit            # == /etc/init.d/econet-commit start
+```
+
+which writes `commit=1, next_active=1, image1_valid=1, boot_fail_num=0` to
+both flag copies. Until then every bad boot self-reverts to stock.
+
+### v4 image contents
+
+- DTS: dumb-switch Ethernet (`reg = <0x1fb50000 0x10000>`, `&switch` stays
+  disabled), `gmac0` enabled with MAC from `<&macaddr_ri 0>`;
+- `02_network`: LAN = `eth0` (falls back to `lan1..lan4` if a DSA port
+  ever shows up);
+- WiFi recovery SSIDs (as in v3);
+- boot-log telemetry service;
+- `nand-utils` package (flash_erase/nanddump/nandwrite for field work);
+- manual-only boot-flag commit.

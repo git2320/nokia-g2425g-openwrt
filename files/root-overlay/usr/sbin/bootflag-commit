@@ -1,0 +1,8 @@
+#!/bin/sh
+# Mark the running OpenWrt image as committed in the boot flag, so the CFE
+# bootloader stops counting failed boots and will not revert to stock.
+#
+# Run this only after you have confirmed the box is reachable (Ethernet or
+# the G2425G-Recovery SSID). While the flag stays uncommitted, a broken
+# image auto-reverts to stock, which is our recovery path without serial.
+exec /etc/init.d/econet-commit start
