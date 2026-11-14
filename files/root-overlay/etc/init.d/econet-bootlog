@@ -24,6 +24,12 @@ snapshot() {
 		cat /proc/cmdline
 		echo "--- mtd ---"
 		cat /proc/mtd
+		echo "--- bootflag (commit next_active img0v img1v fail active) ---"
+		fp=$(grep '"flag"' /proc/mtd 2>/dev/null | sed 's/:.*//')
+		if [ -n "$fp" ]; then
+			dd if=/dev/$fp bs=64 count=1 2>/dev/null | od -An -tu4 -N24
+			dd if=/dev/$fp bs=64 count=1 2>/dev/null | strings
+		fi
 		echo "--- links ---"
 		ip -o link 2>/dev/null
 		echo "--- netdev state ---"

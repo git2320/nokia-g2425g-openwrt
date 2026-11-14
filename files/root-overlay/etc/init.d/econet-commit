@@ -35,8 +35,11 @@ commit_once() {
 	set -- $(od -An -tu4 -N24 $img)
 	commit=$1; next=$2; v0=$3; v1=$4; fail=$5; active=$6
 
-	# Only the OpenWrt image lives in slot 1.
-	[ "$active" = "1" ] || return 0
+	# The OpenWrt image always lives in slot 1 (see PHASE4-FLASH.md); note
+	# the recorded active slot for the log but do not depend on it, the
+	# loader does not always update it before userspace runs.
+	logger -t econet-commit "flags: commit=$commit next=$next img0v=$v0 img1v=$v1 fail=$fail active=$active"
+
 	# Already committed; nothing to do.
 	[ "$commit" = "1" ] && return 0
 
