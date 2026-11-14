@@ -1,0 +1,20 @@
+#!/bin/sh
+# v3 recovery defaults: bring both radios up out of the box.
+# Reason: ethernet may be broken on this board (DTS unverified); WiFi is the
+# lifeline to the system. Reconfigured for repeater duty once reachable.
+[ -f /etc/config/wireless ] || wifi config
+
+uci -q set wireless.radio0.disabled=0 || true
+uci -q set wireless.radio0.country=IN || true
+uci -q set wireless.default_radio0.ssid=G2425G-Recovery || true
+uci -q set wireless.default_radio0.encryption=none || true
+uci -q set wireless.default_radio0.network=lan || true
+
+uci -q set wireless.radio1.disabled=0 || true
+uci -q set wireless.radio1.country=IN || true
+uci -q set wireless.default_radio1.ssid=G2425G-Recovery-5G || true
+uci -q set wireless.default_radio1.encryption=none || true
+uci -q set wireless.default_radio1.network=lan || true
+
+uci commit wireless
+exit 0

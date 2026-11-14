@@ -1,0 +1,4 @@
+#!/bin/sh
+# Enable the boot-flag commit service (needs rc.d symlink created at first boot).
+/etc/init.d/econet-commit enable
+exit 0

@@ -1,0 +1,58 @@
+#!/bin/sh /etc/rc.common
+# Commit the OpenWrt slot in the ASB/EcoNet boot flag.
+#
+# The stock CFE boots a newly flashed image a limited number of times and,
+# if userspace never "commits" it (stock firmware calls swdl_commit which
+# writes the flag partition), marks the image invalid and falls back to the
+# other slot. Without this script a *working* OpenWrt would still be
+# reverted to stock after a few boots (observed on hardware 2026-11-14).
+#
+# Flag layout (64-byte struct at offset 0 of "flag"/"flagback", little endian):
+#   u32 commit, next_active, image0_valid, image1_valid, boot_fail_num, active
+#   then two 16-byte version strings (image0, image1)
+#
+# Policy: only commit when we are running the OpenWrt (slot 1) image, set
+# commit=1 so CFE treats slot 1 as the committed slot, mark image1 valid and
+# reset boot_fail_num. Both flag copies are written (flag + flagback).
+
+START=98
+
+commit_once() {
+	local f d img commit next v0 v1 fail active p
+
+	f=$(grep '"flag"' /proc/mtd 2>/dev/null | sed 's/:.*//')
+	[ -n "$f" ] || { logger -t econet-commit "flag partition not found"; return 0; }
+
+	img=/tmp/.bootflag
+	dd if=/dev/$f of=$img bs=64 count=1 2>/dev/null || return 0
+
+	set -- $(od -An -tu4 -N24 $img)
+	commit=$1; next=$2; v0=$3; v1=$4; fail=$5; active=$6
+
+	# Only the OpenWrt image lives in slot 1.
+	[ "$active" = "1" ] || return 0
+	# Already committed; nothing to do.
+	[ "$commit" = "1" ] && return 0
+
+	printf '\x01\x00\x00\x00' | dd of=$img bs=1 seek=0 conv=notrunc 2>/dev/null
+	printf '\x01\x00\x00\x00' | dd of=$img bs=1 seek=4 conv=notrunc 2>/dev/null
+	printf '\x01\x00\x00\x00' | dd of=$img bs=1 seek=12 conv=notrunc 2>/dev/null
+	printf '\x00\x00\x00\x00' | dd of=$img bs=1 seek=16 conv=notrunc 2>/dev/null
+
+	for p in flag flagback; do
+		d=$(grep "\"$p\"" /proc/mtd 2>/dev/null | sed 's/:.*//')
+		[ -n "$d" ] || continue
+		flash_erase -N -q /dev/$d 0 1 2>/dev/null
+		dd if=$img of=/dev/$d bs=64 count=1 2>/dev/null
+	done
+	rm -f $img
+	logger -t econet-commit "boot flag committed (commit=1, active=1)"
+}
+
+boot() {
+	# Give the system a moment to settle before touching flash.
+	sleep 5
+	commit_once
+}
+
+start() { :; }
