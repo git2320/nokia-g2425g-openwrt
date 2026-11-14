@@ -12,50 +12,58 @@
 # locked into an unreachable OpenWrt. Once the box is reachable (Ethernet
 # or the G2425G-Recovery WiFi), run:
 #
-#     /etc/init.d/econet-commit start        # or: bootflag-commit
+#     bootflag-commit
 #
-# which sets commit=1, next_active=1, image1_valid=1, boot_fail_num=0 so the
-# loader keeps booting OpenWrt.
+# which sets commit=1, next_active=1, image0_valid=1, image1_valid=1,
+# boot_fail_num=0, active=1 so the loader keeps booting OpenWrt.
 #
 # Flag layout (64-byte struct at offset 0 of "flag"/"flagback", little endian):
 #   u32 commit, next_active, image0_valid, image1_valid, boot_fail_num, active
 #   then two 16-byte version strings (image0, image1)
+#
+# Note: busybox applets are limited - OpenWrt's busybox has no usable `od`
+# (BU-BOX default is off), so the six words are written as raw bytes and the
+# version strings are preserved verbatim.
 
 START=98
 
-commit_once() {
-	local f d img commit next v0 v1 fail active p
+# 6 x u32 LE: commit=1, next_active=1, image0_valid=1, image1_valid=1,
+#             boot_fail_num=0, active=1
+FLAGWORDS='\x01\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00'
 
-	f=$(grep '"flag"' /proc/mtd 2>/dev/null | sed 's/:.*//')
-	[ -n "$f" ] || { logger -t econet-commit "flag partition not found"; return 0; }
+write_flag() {
+	local name="$1"
+	local d img=/tmp/.bootflag
 
-	img=/tmp/.bootflag
-	dd if=/dev/$f of=$img bs=64 count=1 2>/dev/null || return 0
+	d=$(grep "\"$name\"" /proc/mtd 2>/dev/null | sed 's/:.*//')
+	[ -n "$d" ] || { logger -t econet-commit "$name partition not found"; return 0; }
 
-	set -- $(od -An -tu4 -N24 $img)
-	commit=$1; next=$2; v0=$3; v1=$4; fail=$5; active=$6
+	# Keep the version strings (bytes 24..63) intact.
+	dd if=/dev/$d of=$img bs=64 count=1 2>/dev/null || return 0
+	printf "$FLAGWORDS" | dd of=$img bs=1 seek=0 conv=notrunc 2>/dev/null
 
-	# The OpenWrt image always lives in slot 1 (see PHASE4-FLASH.md); note
-	# the recorded active slot for the log but do not depend on it, the
-	# loader does not always update it before userspace runs.
-	logger -t econet-commit "flags: commit=$commit next=$next img0v=$v0 img1v=$v1 fail=$fail active=$active"
-
-	# Already committed; nothing to do.
-	[ "$commit" = "1" ] && return 0
-
-	printf '\x01\x00\x00\x00' | dd of=$img bs=1 seek=0 conv=notrunc 2>/dev/null
-	printf '\x01\x00\x00\x00' | dd of=$img bs=1 seek=4 conv=notrunc 2>/dev/null
-	printf '\x01\x00\x00\x00' | dd of=$img bs=1 seek=12 conv=notrunc 2>/dev/null
-	printf '\x00\x00\x00\x00' | dd of=$img bs=1 seek=16 conv=notrunc 2>/dev/null
-
-	for p in flag flagback; do
-		d=$(grep "\"$p\"" /proc/mtd 2>/dev/null | sed 's/:.*//')
-		[ -n "$d" ] || continue
+	# flash_erase (nand-utils) can erase just the first block; fall back to
+	# the mtd utility which erases the whole (256 KiB) flag partition.
+	if command -v flash_erase >/dev/null 2>&1; then
 		flash_erase -N -q /dev/$d 0 1 2>/dev/null
 		dd if=$img of=/dev/$d bs=64 count=1 2>/dev/null
-	done
+	else
+		mtd write $img $name 2>/dev/null
+	fi
 	rm -f $img
-	logger -t econet-commit "boot flag committed (commit=1, active=1)"
+}
+
+commit_once() {
+	write_flag flag
+	write_flag flagback
+
+	if command -v hexdump >/dev/null 2>&1; then
+		d=$(grep '"flag"' /proc/mtd 2>/dev/null | sed 's/:.*//')
+		[ -n "$d" ] && hexdump -C -n 32 /dev/$d 2>/dev/null | while read -r l; do
+			logger -t econet-commit "flag: $l"
+		done
+	fi
+	logger -t econet-commit "boot flag committed (commit=1, next_active=1, image1_valid=1, boot_fail_num=0)"
 }
 
 boot() {
