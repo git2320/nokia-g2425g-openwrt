@@ -29,7 +29,7 @@
 	chosen {
 		stdout-path = "/serial@1fbf0000:115200";
 		linux,usable-memory-range = <0x00020000 0x0ffe0000>;
-		bootargs = "console=ttyS0,115200 rootfstype=squashfs root=ubi0:rootfs ubi.mtd=linux rootwait";
+		bootargs = "console=ttyS0,115200 rootfstype=squashfs root=ubi0:rootfs ubi.mtd=ubi rootwait";
 	};
 
 	leds {
