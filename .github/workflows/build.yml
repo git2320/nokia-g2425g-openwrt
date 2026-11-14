@@ -69,10 +69,8 @@ jobs:
         run: make -j$(nproc) download
 
       - name: Build (minimal, parallel)
-        env:
-          MAKEFLAGS: "-j$(nproc)"
         run: |
-          make -j$(nproc) BUILD_LOG=1 V=s 2>&1 | tail -100
+          make -j$(nproc) BUILD_LOG=1
           ls -lh bin/targets/*/*/ || true
 
       - name: Save ccache stats
