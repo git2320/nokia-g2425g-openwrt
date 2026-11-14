@@ -39,7 +39,7 @@
 	chosen {
 		stdout-path = "/serial@1fbf0000:115200";
 		linux,usable-memory-range = <0x00020000 0x0ffe0000>;
-		bootargs = "console=ttyS0,115200 rootfstype=squashfs root=ubi0:rootfs ubi.mtd=ubi rootwait";
+		bootargs = "console=ttyS0,115200 rootfstype=squashfs root=ubi0:rootfs ubi.mtd=ubi";
 	};
 
 	leds {
@@ -123,21 +123,6 @@
 		};
 	};
 
-	virtual_flash {
-		compatible = "mtd-concat";
-		devices = <&rootA &stock_rootfs>;
-
-		partitions {
-			compatible = "fixed-partitions";
-			#address-cells = <1>;
-			#size-cells = <1>;
-
-			partition@0 {
-				label = "ubi";
-				reg = <0x0 0x0>;
-			};
-		};
-	};
 };
 
 &pcie0 {
@@ -226,8 +211,8 @@
 		/* UBI rootfs volume — inside the linux slot, right after the
 		 * 4 MB kernel area. Kept separate from the stock "rootfs"
 		 * partition so image0 stays a genuine recovery slot. */
-		rootA: partition@2680000 {
-			label = "tclinux_rootfs";
+		ubi: partition@2680000 {
+			label = "ubi";
 			reg = <0x2680000 0x1e00000>;
 		};
 
