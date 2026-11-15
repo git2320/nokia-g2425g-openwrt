@@ -25,7 +25,13 @@ platform_do_upgrade() {
 	dasan,h660gm-a-generic|\
 	jiofiber,jcow407|\
 	jiofiber,jcow414)
+		# The Nokia slot layout is: linux_kernel (4 MiB) followed by the
+		# "ubi" partition that the runtime UBI volume lives on, both inside
+		# the stock "linux" slot. CI_UBIPART must name that partition
+		# explicitly; nand_do_upgrade defaults to "ubi" but making it
+		# explicit keeps sysupgrade paired with the DTS.
 		CI_KERNPART="linux_kernel"
+		CI_UBIPART="ubi"
 		nand_do_upgrade "$1"
 		;;
 	esac

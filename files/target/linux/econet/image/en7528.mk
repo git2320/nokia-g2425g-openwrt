@@ -39,7 +39,11 @@ define Device/nokia_g-2425g-a
   TRX_LOADADDR := 0x80002000
   KERNEL := kernel-bin | append-dtb | tclinux-free-bootbase-jump | lzma | \
     kernel-trx
-  DEVICE_PACKAGES := kmod-usb2 kmod-mt7603 kmod-mt7615e nand-utils
+  # kmod-mt7663-firmware-ap is required for the 5 GHz MT7663 radio; without it
+  # radio1 cannot probe, so the recovery SSID on 5 GHz never comes up.
+  # mtd provides /sbin/mtd, used by econet-bootlog and the flag-commit helper.
+  DEVICE_PACKAGES := kmod-usb2 kmod-mt7603 kmod-mt7615e \
+    kmod-mt7663-firmware-ap nand-utils mtd
 endef
 TARGET_DEVICES += nokia_g-2425g-a
 

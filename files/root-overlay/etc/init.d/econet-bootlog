@@ -59,14 +59,19 @@ boot() {
 	echo "=== OpenWrt userspace reached ($(date)) cmdline=$(cat /proc/cmdline) ===" > /tmp/.bootlog.probe
 	mtd write /tmp/.bootlog.probe log 2>/dev/null
 
-	sleep 10
-	snapshot > /tmp/.bootlog.early
-	mtd write /tmp/.bootlog.early log 2>/dev/null
+	# Do the waiting snapshots in the background: rc runs boot() functions
+	# with START ordering, and sleeping here would delay every later boot
+	# script (including network setup) by 80 seconds.
+	(
+		sleep 10
+		snapshot > /tmp/.bootlog.early
+		mtd write /tmp/.bootlog.early log 2>/dev/null
 
-	sleep 70
-	snapshot > /tmp/.bootlog.late
-	cat /tmp/.bootlog.early /tmp/.bootlog.late > /tmp/.bootlog.all
-	mtd write /tmp/.bootlog.all log 2>/dev/null
+		sleep 70
+		snapshot > /tmp/.bootlog.late
+		cat /tmp/.bootlog.early /tmp/.bootlog.late > /tmp/.bootlog.all
+		mtd write /tmp/.bootlog.all log 2>/dev/null
+	) </dev/null >/dev/null 2>&1 &
 }
 
 start() { :; }

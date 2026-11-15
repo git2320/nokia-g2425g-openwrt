@@ -1,7 +1,34 @@
-# Minimal kernel config for Nokia G-2425G-A
-# Disable unused subsystems to speed up build
+# Extra kernel config for the Nokia G-2425G-A port.
+#
+# This file is appended AFTER config.seed, so anything here overrides the
+# target defaults in target/linux/econet/en7528/config-6.18. Only prune
+# subsystems that this board provably never uses; every "=n" here must not be
+# a dependency of something the boot path needs.
+#
+# BOOT-CRITICAL - never disable these (they are why earlier images could not
+# mount their rootfs at all):
+#   SPI / SPI_MASTER  -> the NAND controller is an SPI-NAND host driver
+#                        (CONFIG_SPI_AIROHA_SNFI lives under drivers/spi and
+#                        depends on SPI_MASTER). Without it there is no
+#                        /dev/mtd*, no UBI, no rootfs.
+#   MTD_SPI_NAND, MTD_UBI, UBIFS_FS
+#   IPV6              -> dnsmasq's Makefile has "DEPENDS+=@IPV6"; with IPv6
+#                        off the DHCP server is silently dropped from the image.
+#   NF_CONNTRACK/NF_NAT/NETFILTER -> firewall4 cannot load without them.
 
-# Filesystems we don't need
+# --- Boot path: keep (explicit, so an accidental override is visible) ---
+CONFIG_SPI=y
+CONFIG_SPI_MASTER=y
+CONFIG_SPI_MEM=y
+CONFIG_SPI_AIROHA_SNFI=y
+CONFIG_MTD=y
+CONFIG_MTD_SPI_NAND=y
+CONFIG_MTD_NAND=y
+CONFIG_MTD_NAND_ECC=y
+CONFIG_MTD_UBI=y
+CONFIG_UBIFS_FS=y
+
+# --- Filesystems we don't need (UBIFS above is the real rootfs) ---
 CONFIG_EXT4_FS=n
 CONFIG_BTRFS_FS=n
 CONFIG_F2FS_FS=n
@@ -12,36 +39,19 @@ CONFIG_VFAT_FS=n
 CONFIG_MSDOS_FS=n
 CONFIG_NLS=n
 
-# Network protocols we don't need
-CONFIG_IPV6=n
-CONFIG_IPV6_MULTIPLE_TABLES=n
-CONFIG_NETFILTER_XT_TARGET_LOG=n
-CONFIG_NETFILTER_XT_MATCH_STATE=n
-CONFIG_NETFILTER_XT_MATCH_CONNTRACK=n
-CONFIG_NF_CONNTRACK=n
-CONFIG_NF_NAT=n
-CONFIG_NETFILTER_XT_TARGET_MASQUERADE=n
-CONFIG_NETFILTER_XT_TARGET_REDIRECT=n
-CONFIG_NETFILTER_XT_MATCH_COMMENT=n
-CONFIG_NETFILTER_XT_MATCH_LIMIT=n
-CONFIG_NETFILTER_XT_MATCH_MAC=n
-CONFIG_NETFILTER_XT_MATCH_MARK=n
-CONFIG_NETFILTER_XT_MATCH_MULTIPORT=n
-CONFIG_NETFILTER_XT_MATCH_TCPMSS=n
-CONFIG_NETFILTER_XT_MATCH_HASHLIMIT=n
+# --- IPv6 and netfilter: required by dnsmasq / firewall4, do not prune ---
 
-# Wireless - we use mt76, not ath/mac80211 subsystems directly
+# --- Wireless: mt76 only, we do not use wext/mesh ---
 CONFIG_CFG80211_WEXT=n
 CONFIG_MAC80211_MESH=n
-CONFIG_MAC80211_LEDS=n
 CONFIG_MAC80211_DEBUGFS=n
 
-# USB - minimal
+# --- USB: minimal (no storage, no serial gadget) ---
 CONFIG_USB_STORAGE=n
 CONFIG_USB_SERIAL=n
 CONFIG_USB_GADGET=n
 
-# Crypto - minimal
+# --- Crypto: WPA needs AES/SHA; the rest is optional ---
 CONFIG_CRYPTO_USER=n
 CONFIG_CRYPTO_USER_API=n
 CONFIG_CRYPTO_HASH=y
@@ -50,59 +60,30 @@ CONFIG_CRYPTO_SHA256=y
 CONFIG_CRYPTO_SHA1=y
 CONFIG_CRYPTO_MD5=y
 
-# Debug - disable
-CONFIG_DEBUG_KERNEL=n
+# --- Debug ---
 CONFIG_DEBUG_INFO=n
-CONFIG_DEBUG_FS=n
 CONFIG_KALLSYMS_ALL=n
 
-# Sound - not needed
+# --- Sound / unused input devices ---
 CONFIG_SOUND=n
-
-# Input - minimal
-CONFIG_INPUT_EVDEV=n
 CONFIG_INPUT_KEYBOARD=n
 CONFIG_INPUT_MOUSE=n
 
-# PCI - we need it for wifi
-# CONFIG_PCI=y (keep)
-
-# I2C/SPI - minimal
+# --- I2C: no I2C devices on this board ---
 CONFIG_I2C=n
-CONFIG_SPI=n
-CONFIG_SPI_MASTER=n
 
-# GPIO - we use it for LEDs/reset
-# CONFIG_GPIOLIB=y (keep)
-
-# LEDS - we use them
+# --- GPIO / LEDs / watchdog: used ---
 CONFIG_LEDS_CLASS=y
 CONFIG_LEDS_GPIO=y
-
-# Watchdog - we need it
 CONFIG_WATCHDOG=y
 
-# MTD - we need it
-CONFIG_MTD=y
-CONFIG_MTD_SPLIT=y
-CONFIG_MTD_UBI=y
-CONFIG_UBIFS_FS=y
-CONFIG_MTD_NAND=y
-CONFIG_MTD_NAND_ECC=y
-
-# Network - we need ethernet and wifi
+# --- Ethernet / WLAN ---
 CONFIG_ETHERNET=y
-CONFIG_NET_VENDOR_MEDIATEK=y
 CONFIG_WLAN=y
 
-# Our drivers
+# --- Our drivers ---
 CONFIG_PACKAGE_kmod_econet_eth=y
 CONFIG_PACKAGE_kmod_mt76=y
 CONFIG_PACKAGE_kmod_mt7603=y
 CONFIG_PACKAGE_kmod_mt7615=y
 CONFIG_PACKAGE_kmod_mt7663_firmware_ap=y
-
-# Crypto for wifi
-CONFIG_CRYPTO_AES_ARM=n
-CONFIG_CRYPTO_AES_NI_INTEL=n
-CONFIG_CRYPTO_AES_TI=n

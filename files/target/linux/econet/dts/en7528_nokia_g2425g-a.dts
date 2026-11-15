@@ -218,7 +218,11 @@
 
 		stock_rootfs: partition@4480000 {
 			label = "rootfs";
-			reg = <0x4480000 0x1e20000>;
+			/* 0x1de0000, not 0x1e20000: the live mtd table reports a
+			 * non erase-aligned 0x1e17400 for this partition, and the
+			 * next partition (image_oflt) starts at 0x6260000. Using
+			 * 0x1e20000 made the two overlap by 0x40000. */
+			reg = <0x4480000 0x1de0000>;
 			read-only;
 		};
 

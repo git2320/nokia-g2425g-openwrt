@@ -16,6 +16,7 @@ goal of this port is to use the device as a router / WiFi repeater / dumb AP.
 | `.github/workflows/build.yml` | Builds the image on GitHub Actions |
 | `PHASE2-FINDINGS.md` | Hardware reverse-engineering notes (flash map, image format, OTP cal) |
 | `PHASE3-BUILD.md` | Port/build notes and flash plan |
+| `PHASE5-BOOT-CAUSE.md` | **Why v2/v4 never came up + what changed in this commit** |
 
 Device files (already upstream-compatible structure):
 
@@ -49,8 +50,12 @@ artifact (Actions tab → run → artifacts).
 
 ## Flashing / status
 
-⚠️ **Do not flash anything yet.** Read `PHASE3-BUILD.md` first: the stock
-bootloader's tolerance of OpenWrt's 256-byte TRX header and its version/flag
-validation are unverified. Full NAND backup (15 partitions) is mandatory
-before any write. A USB-TTL serial adapter is strongly recommended as the
-only recovery path.
+⚠️ **Do not flash anything you have not built yourself.** Read
+`PHASE5-BOOT-CAUSE.md` first: the previous images booted but had no network
+stack at all (their `config.seed` deleted `ubus`/`ubusd`/`libuci`, which makes
+kconfig drop `netifd`, `firewall4` and `dnsmasq`). That is fixed here, but the
+image is still unbuilt and unflashed. The stock bootloader's tolerance of
+OpenWrt's 256-byte TRX header and its version/flag validation remain only
+partly verified. Full NAND backup (15 partitions) is mandatory before any
+write. A USB-TTL serial adapter is strongly recommended as the only real
+recovery path.

@@ -236,3 +236,9 @@ both flag copies. Until then every bad boot self-reverts to stock.
 - boot-log telemetry service;
 - `nand-utils` package (flash_erase/nanddump/nandwrite for field work);
 - manual-only boot-flag commit.
+
+### v5 — superseded by the root-cause analysis in PHASE5-BOOT-CAUSE.md
+
+Do not reuse v4's `config.seed`: it deleted `ubus`/`ubusd`/`libubus`/`libuci`,
+so the built image had no `netifd`, `firewall4` or `dnsmasq`. The "link up, no
+traffic" symptom was missing userspace, not a broken DSA/dumb-switch DTS.

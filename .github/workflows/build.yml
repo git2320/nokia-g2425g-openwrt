@@ -42,6 +42,7 @@ jobs:
           cp -Rv port/files/root-overlay/. files/
           chmod 755 files/etc/uci-defaults/99-wifi-recovery \
             files/etc/uci-defaults/99-bootlog-enable \
+            files/etc/uci-defaults/99-root-password \
             files/etc/init.d/econet-bootlog \
             files/etc/init.d/econet-commit \
             files/usr/sbin/bootflag-commit
@@ -64,6 +65,37 @@ jobs:
           echo "CONFIG_CCACHE_DIR=$(pwd)/.ccache" >> .config
           make defconfig
           grep -c "^CONFIG_PACKAGE.*=y" .config
+
+      # Refuse to build an image that cannot boot or cannot be reached.
+      # config-minimal is appended after the target config, so a stray "=n"
+      # there silently drops whole subsystems (this is what produced the
+      # earlier unbootable/unreachable images). Fail loudly instead.
+      - name: Verify boot-critical config
+        run: |
+          fail=0
+          need_y() {
+            if ! grep -q "^$1=y$" .config; then
+              echo "::error::$1 is not =y (boot or network would be broken)"
+              fail=1
+            fi
+          }
+          need_y CONFIG_SPI
+          need_y CONFIG_SPI_MASTER
+          need_y CONFIG_SPI_AIROHA_SNFI
+          need_y CONFIG_MTD_SPI_NAND
+          need_y CONFIG_MTD_UBI
+          need_y CONFIG_UBIFS_FS
+          need_y CONFIG_NF_CONNTRACK
+          need_y CONFIG_PACKAGE_netifd
+          need_y CONFIG_PACKAGE_dnsmasq
+          need_y CONFIG_PACKAGE_firewall4
+          need_y CONFIG_PACKAGE_ubusd
+          need_y CONFIG_PACKAGE_dropbear
+          need_y CONFIG_PACKAGE_kmod-econet-eth
+          need_y CONFIG_PACKAGE_kmod-mt7603
+          need_y CONFIG_PACKAGE_kmod-mt7615e
+          need_y CONFIG_PACKAGE_kmod-mt7663-firmware-ap
+          exit $fail
 
       - name: Download sources (only our target)
         run: make -j$(nproc) download
