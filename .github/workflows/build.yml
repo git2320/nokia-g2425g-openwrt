@@ -67,34 +67,64 @@ jobs:
           grep -c "^CONFIG_PACKAGE.*=y" .config
 
       # Refuse to build an image that cannot boot or cannot be reached.
-      # config-minimal is appended after the target config, so a stray "=n"
-      # there silently drops whole subsystems (this is what produced the
-      # earlier unbootable/unreachable images). Fail loudly instead.
+      #
+      # Two different config layers are checked, because they do not live in
+      # the same file:
+      #  * kernel options are NOT in .config (unknown symbols are dropped by
+      #    `make defconfig`); they come from the target kernel config files.
+      #  * package selection IS in .config, as CONFIG_PACKAGE_<name> with the
+      #    package's real name, hyphens included.
       - name: Verify boot-critical config
         run: |
           fail=0
-          need_y() {
-            if ! grep -q "^$1=y$" .config; then
-              echo "::error::$1 is not =y (boot or network would be broken)"
+
+          need_pkg() {
+            if ! grep -qE "^$1=[ym]$" .config; then
+              echo "::error::$1 missing from .config (network would be broken)"
               fail=1
             fi
           }
-          need_y CONFIG_SPI
-          need_y CONFIG_SPI_MASTER
-          need_y CONFIG_SPI_AIROHA_SNFI
-          need_y CONFIG_MTD_SPI_NAND
-          need_y CONFIG_MTD_UBI
-          need_y CONFIG_UBIFS_FS
-          need_y CONFIG_NF_CONNTRACK
-          need_y CONFIG_PACKAGE_netifd
-          need_y CONFIG_PACKAGE_dnsmasq
-          need_y CONFIG_PACKAGE_firewall4
-          need_y CONFIG_PACKAGE_ubusd
-          need_y CONFIG_PACKAGE_dropbear
-          need_y CONFIG_PACKAGE_kmod-econet-eth
-          need_y CONFIG_PACKAGE_kmod-mt7603
-          need_y CONFIG_PACKAGE_kmod-mt7615e
-          need_y CONFIG_PACKAGE_kmod-mt7663-firmware-ap
+
+          need_kernel() {
+            sym="$1"
+            for f in target/linux/generic/config-* \
+                     target/linux/econet/config-* \
+                     target/linux/econet/en7528/config-*; do
+              if [ -f "$f" ] && grep -qE "^$sym=[ym]$" "$f"; then
+                return 0
+              fi
+            done
+            echo "::error::$sym not enabled in the target kernel config (boot would be broken)"
+            fail=1
+          }
+
+          # NAND is SPI-NAND on this SoC: without the SPI core and the Airoha
+          # SNFI host driver there is no /dev/mtd*, no UBI and no rootfs.
+          need_kernel CONFIG_SPI
+          need_kernel CONFIG_SPI_MASTER
+          need_kernel CONFIG_SPI_AIROHA_SNFI
+          need_kernel CONFIG_MTD_SPI_NAND
+          need_kernel CONFIG_MTD_UBI
+          need_kernel CONFIG_UBIFS_FS
+
+          # Networking core: netifd needs +libubus +ubus +ubusd +libuci and
+          # dnsmasq needs +libubus/@IPV6, so pruning any of them silently
+          # removes the whole network stack from the image.
+          need_pkg CONFIG_PACKAGE_netifd
+          need_pkg CONFIG_PACKAGE_dnsmasq
+          need_pkg CONFIG_PACKAGE_firewall4
+          need_pkg CONFIG_PACKAGE_ubusd
+          need_pkg CONFIG_PACKAGE_dropbear
+
+          # Board drivers and flash tools (firmware for 5 GHz, /sbin/mtd for
+          # the bootlog and flag-commit helpers).
+          need_pkg CONFIG_PACKAGE_kmod-econet-eth
+          need_pkg CONFIG_PACKAGE_kmod-mt7603
+          need_pkg CONFIG_PACKAGE_kmod-mt7615e
+          need_pkg CONFIG_PACKAGE_kmod-mt7663-firmware-ap
+          need_pkg CONFIG_PACKAGE_nand-utils
+          need_pkg CONFIG_PACKAGE_mtd
+
           exit $fail
 
       - name: Download sources (only our target)

@@ -1,7 +1,7 @@
 # Phase 5 — Why the v2/v4 images never came up, and what changed
 
-Status: root causes identified from the repository + stock dump, fixes committed
-locally, **not built and not flashed**. Read this before the next flash.
+Status: root cause identified from the repository, fixes committed locally,
+**not built and not flashed**. Read this before the next flash.
 
 ## Symptom (as recorded in PHASE4-FLASH.md)
 
@@ -9,50 +9,10 @@ locally, **not built and not flashed**. Read this before the next flash.
 > link came up (PHY negotiates) yet no ARP/DHCP/ICMP and all ports closed; WLAN
 > LED flashed during boot then went out.
 
-Two independent defects in the *build* recipe produce exactly this. Neither is a
-device-tree problem, neither is a bootloader/TRX problem, and neither can be
-found by decompiling the stock firmware — they are in this repository.
+The kernel boots and the switch PHYs autonegotiate in hardware. What is missing
+is everything that configures the network and the services on top of it.
 
----
-
-## Root cause 1 (fatal, boot): `config-minimal` disabled the NAND controller
-
-`.github/workflows/build.yml` appends `files/target/linux/econet/config-minimal`
-**after** `config.seed`, so every line in it overrides the target defaults from
-`target/linux/econet/en7528/config-6.18`. It contained:
-
-```
-CONFIG_SPI=n
-CONFIG_SPI_MASTER=n
-```
-
-The EN7528 NAND is an SPI-NAND host controller: the upstream EN7528 config
-carries
-
-```
-CONFIG_SPI=y
-CONFIG_SPI_MASTER=y
-CONFIG_SPI_AIROHA_SNFI=y
-CONFIG_MTD_SPI_NAND=y
-```
-
-`CONFIG_SPI_AIROHA_SNFI` lives in `drivers/spi/` and depends on `SPI_MASTER`,
-which depends on `SPI`. Pinning `SPI=n` makes kconfig drop the SPI core, then
-the host controller, then SPI-NAND: **no `/dev/mtd*`, no UBI attach, no rootfs**.
-The kernel starts, the ethernet PHYs autonegotiate (hardware, no software
-needed), the GPIO LEDs get a default state — and then the kernel cannot mount
-init and panics. That is the "boots, link flashes, nothing else" screenshot.
-
-The same file also disabled `CONFIG_IPV6`, and dnsmasq's Makefile carries
-`DEPENDS+=@IPV6`; and it disabled `NF_CONNTRACK`/`NF_NAT`/netfilter targets,
-without which `firewall4` cannot load.
-
-`config-minimal` is now pruned down to subsystems this board provably never
-uses, with the boot-critical symbols re-asserted explicitly, and the workflow
-now **fails the build** if any of the required symbols is not `=y` after
-`make defconfig` (see `Verify boot-critical config`).
-
-## Root cause 2 (fatal, reachability): `config.seed` deleted the network stack
+## Root cause: `config.seed` deleted the network stack
 
 `config.seed` (v2/v4) contained:
 
@@ -73,21 +33,27 @@ Upstream dependency metadata (verified against `openwrt/openwrt@main`):
 | `dnsmasq` | `+libubus …`, plus `@IPV6` |
 
 OpenWrt package dependencies are `depends on`, not `select`. With `ubus`,
-`ubusd`, `libubus` and `libuci` pinned to `n`, kconfig cannot satisfy them, so
-`netifd`, `firewall4`, `dnsmasq` (DHCP) and `odhcpd` are **silently dropped
-from the image**. Nothing warns at build time beyond the usual unmet-dependency
-line.
+`ubusd`, `libubus` and `libuci` pinned to `n`, kconfig cannot satisfy those
+dependencies, so `netifd`, `firewall4`, `dnsmasq` (DHCP) and `odhcpd` are
+**silently dropped from the image**. Nothing warns at build time beyond the
+usual unmet-dependency line.
 
-Result even with a working rootfs: `eth0` exists and its PHY links up, but there
-is no bridge, no `br-lan`, no IPv4 address, no DHCP, no firewall — every packet
-is dropped. The v4 DSA→dumb-switch rewrite was chasing the wrong layer.
+Result on the box: `eth0` exists and its PHY links up, but there is no bridge,
+no `br-lan`, no IPv4 address, no DHCP, no firewall — every packet is dropped,
+exactly as observed. The v4 DSA→dumb-switch rewrite was chasing the wrong layer.
 
 ### Secondary defect: the 5 GHz radio had no firmware
 
 `Device/nokia_g-2425g-a` was missing `kmod-mt7663-firmware-ap` (the DASAN
 definition has it). MT7663 cannot probe without it, so `radio1` never existed
-and the `G2425G-Recovery-5G` lifeline from `99-wifi-recovery` could never come
-up. Together with the missing netifd this left **zero** management paths.
+and `G2425G-Recovery-5G` could never come up. Combined with the missing netifd
+this left **zero** management paths.
+
+Note: `config-minimal` did contain a line that *looked* like it added the
+firmware (`CONFIG_PACKAGE_kmod_mt7663_firmware_ap=y`), but that symbol does not
+exist — package symbols keep the real name and hyphens
+(`CONFIG_PACKAGE_kmod-mt7663-firmware-ap`), so the line was inert. The device
+package list is the correct place, and that is where the fix lives.
 
 ### Tertiary defects
 
@@ -108,7 +74,48 @@ up. Together with the missing netifd this left **zero** management paths.
   `0x6260000`**. The live mtd table reports a non-aligned `0x1e17400`; the
   correct erase-aligned size ending where `image_oflt` starts is `0x1de0000`.
 
----
+## Correction: the `config-minimal` kernel lines were never the problem
+
+An earlier version of this document claimed `CONFIG_SPI=n` in
+`config-minimal` disabled the NAND controller. **That was wrong**, and the
+first version of the CI gate that checked `.config` for `CONFIG_SPI` proved it
+by failing on every kernel symbol.
+
+OpenWrt's top-level `.config` only holds symbols defined by its own Kconfig:
+target selection, package selection (`CONFIG_PACKAGE_<name>`) and the
+`CONFIG_KERNEL_*` allowlist from `config/Config-kernel.in`. Raw kernel symbols
+are not in that namespace, so `make defconfig` drops them without a trace:
+
+```
+$ grep '^config SPI' config/Config-kernel.in      # no match
+$ grep '^CONFIG_SPI=' .config                     # no match
+```
+
+Kernel options are merged from `target/linux/generic/config-<ver>` and
+`target/linux/<target>/[<subtarget>/]config-<ver>` when the kernel is built.
+`target/linux/econet/en7528/config-6.18` already sets:
+
+```
+CONFIG_SPI=y
+CONFIG_SPI_MASTER=y
+CONFIG_SPI_AIROHA_SNFI=y
+CONFIG_MTD_SPI_NAND=y
+CONFIG_MTD_UBI=y
+CONFIG_UBIFS_FS=y
+```
+
+So the NAND controller was never disabled, and the earlier `=n` lines in
+`config-minimal` did nothing at all (they neither helped nor hurt). The file now
+contains only valid `.config` symbols, with a header explaining the split, and
+the CI gate checks each layer in the file where it actually lives:
+
+* kernel symbols → `target/linux/{generic,econet,econet/en7528}/config-*`
+* package symbols → `.config`
+
+Because of that split, `CONFIG_NF_CONNTRACK` is no longer asserted directly: it
+is not listed in any target config file (it is selected by the nftables
+dependencies), so asserting it at config time would always fail. The package
+assertions (`firewall4`, `kmod-nft-*` via `firewall4`) cover the requirement.
 
 ## What is *not* wrong (verified — do not "fix" these)
 
@@ -147,9 +154,9 @@ and its version field. 280 vs 256 bytes is not what stopped boot.
 
 | File | Change |
 |---|---|
-| `files/target/linux/econet/config-minimal` | stop disabling SPI/SPI_MASTER (NAND), IPv6 (dnsmasq), conntrack/NAT (firewall4); re-assert boot-critical symbols |
 | `config.seed` | keep ubus/ubusd/libubus/libuci/libblobmsg-json/libjson-c; only LuCI/uhttpd/rpcd stay disabled |
-| `.github/workflows/build.yml` | new `Verify boot-critical config` gate; chmod for the new script |
+| `files/target/linux/econet/config-minimal` | rewritten with valid `.config` symbols only (hyphenated package names); no inert kernel lines |
+| `.github/workflows/build.yml` | `Verify boot-critical config` checks kernel symbols in target config files and packages in `.config`; chmod for the new script |
 | `files/target/linux/econet/image/en7528.mk` | add `kmod-mt7663-firmware-ap`, `mtd` |
 | `files/target/linux/econet/base-files/lib/upgrade/platform.sh` | explicit `CI_UBIPART="ubi"` |
 | `files/target/linux/econet/dts/en7528_nokia_g2425g-a.dts` | `rootfs` size `0x1e20000` → `0x1de0000` (no overlap with `image_oflt`) |
@@ -169,8 +176,10 @@ and its version field. 280 vs 256 bytes is not what stopped boot.
   `0x400000`, CRC over payload only — matches the layout PHASE4 verified on the
   flashed file.
 * Driver source inspected to confirm the dumb-switch contract (above).
-* Upstream dependency metadata read for `netifd`, `dnsmasq`, `firewall4`, and
-  the EN7528 kernel config to confirm every symbol this commit stops pruning.
+* CI gate exercised locally against the real upstream
+  `generic/config-6.18` + `econet/en7528/config-6.18` files and a synthetic
+  `.config`: passes with a correct config, fails when a required package or
+  kernel symbol is removed.
 
 ## Verification NOT performed (be honest about this)
 
@@ -181,9 +190,9 @@ and its version field. 280 vs 256 bytes is not what stopped boot.
   auto-revert is unchanged, so an unproven image still falls back to stock.
 * **No decompilation of the stock kernel/bootloader.** REA on this host has no
   Ghidra/IDA/rizin backend, and the bootloader second stage is encrypted. It is
-  also beside the point: both failures are in the build recipe, and the stock
-  binaries were only needed for facts already extracted in PHASE2 (partition
-  map, TRX layout, MAC offset, boot-flag struct).
+  also beside the point: the failure is in the build recipe, and the stock
+  binaries were only needed for the facts already extracted in PHASE2
+  (partition map, TRX layout, MAC offset, boot-flag struct).
 
 ## Next steps
 

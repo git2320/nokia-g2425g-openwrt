@@ -1,89 +1,29 @@
-# Extra kernel config for the Nokia G-2425G-A port.
+# Extra top-level .config additions for the Nokia G-2425G-A image.
+# Appended AFTER config.seed by CI, so these win over the seed.
 #
-# This file is appended AFTER config.seed, so anything here overrides the
-# target defaults in target/linux/econet/en7528/config-6.18. Only prune
-# subsystems that this board provably never uses; every "=n" here must not be
-# a dependency of something the boot path needs.
+# Only symbols that exist in OpenWrt's own Kconfig may appear here:
+#   CONFIG_PACKAGE_<package-name>     real package name, hyphens preserved
+#   CONFIG_TARGET_* / CONFIG_KERNEL_* (the allowlist in config/Config-kernel.in)
 #
-# BOOT-CRITICAL - never disable these (they are why earlier images could not
-# mount their rootfs at all):
-#   SPI / SPI_MASTER  -> the NAND controller is an SPI-NAND host driver
-#                        (CONFIG_SPI_AIROHA_SNFI lives under drivers/spi and
-#                        depends on SPI_MASTER). Without it there is no
-#                        /dev/mtd*, no UBI, no rootfs.
-#   MTD_SPI_NAND, MTD_UBI, UBIFS_FS
-#   IPV6              -> dnsmasq's Makefile has "DEPENDS+=@IPV6"; with IPv6
-#                        off the DHCP server is silently dropped from the image.
-#   NF_CONNTRACK/NF_NAT/NETFILTER -> firewall4 cannot load without them.
+# Raw kernel options (CONFIG_SPI, CONFIG_MTD_UBI, CONFIG_NF_CONNTRACK, ...) are
+# NOT part of .config. `make defconfig` silently drops unknown symbols, so
+# writing them here does nothing at all. Kernel options live in
+# target/linux/<target>/config-<kernelversion>; en7528/config-6.18 already
+# enables SPI, SPI_MASTER, SPI_AIROHA_SNFI, MTD_SPI_NAND, MTD_UBI and UBIFS_FS.
+#
+# Punctuation matters too: CONFIG_PACKAGE_kmod_mt7663_firmware_ap is inert,
+# CONFIG_PACKAGE_kmod-mt7663-firmware-ap is the real symbol.
 
-# --- Boot path: keep (explicit, so an accidental override is visible) ---
-CONFIG_SPI=y
-CONFIG_SPI_MASTER=y
-CONFIG_SPI_MEM=y
-CONFIG_SPI_AIROHA_SNFI=y
-CONFIG_MTD=y
-CONFIG_MTD_SPI_NAND=y
-CONFIG_MTD_NAND=y
-CONFIG_MTD_NAND_ECC=y
-CONFIG_MTD_UBI=y
-CONFIG_UBIFS_FS=y
+# Drivers this board needs. These are also listed in DEVICE_PACKAGES in
+# files/target/linux/econet/image/en7528.mk; keeping them here means a build
+# that skips the device profile still gets a working image.
+CONFIG_PACKAGE_kmod-econet-eth=y
+CONFIG_PACKAGE_kmod-mt7603=y
+CONFIG_PACKAGE_kmod-mt7615e=y
+CONFIG_PACKAGE_kmod-mt7663-firmware-ap=y
+CONFIG_PACKAGE_kmod-usb2=y
 
-# --- Filesystems we don't need (UBIFS above is the real rootfs) ---
-CONFIG_EXT4_FS=n
-CONFIG_BTRFS_FS=n
-CONFIG_F2FS_FS=n
-CONFIG_XFS_FS=n
-CONFIG_JFFS2_FS=n
-CONFIG_NTFS_FS=n
-CONFIG_VFAT_FS=n
-CONFIG_MSDOS_FS=n
-CONFIG_NLS=n
-
-# --- IPv6 and netfilter: required by dnsmasq / firewall4, do not prune ---
-
-# --- Wireless: mt76 only, we do not use wext/mesh ---
-CONFIG_CFG80211_WEXT=n
-CONFIG_MAC80211_MESH=n
-CONFIG_MAC80211_DEBUGFS=n
-
-# --- USB: minimal (no storage, no serial gadget) ---
-CONFIG_USB_STORAGE=n
-CONFIG_USB_SERIAL=n
-CONFIG_USB_GADGET=n
-
-# --- Crypto: WPA needs AES/SHA; the rest is optional ---
-CONFIG_CRYPTO_USER=n
-CONFIG_CRYPTO_USER_API=n
-CONFIG_CRYPTO_HASH=y
-CONFIG_CRYPTO_AES=y
-CONFIG_CRYPTO_SHA256=y
-CONFIG_CRYPTO_SHA1=y
-CONFIG_CRYPTO_MD5=y
-
-# --- Debug ---
-CONFIG_DEBUG_INFO=n
-CONFIG_KALLSYMS_ALL=n
-
-# --- Sound / unused input devices ---
-CONFIG_SOUND=n
-CONFIG_INPUT_KEYBOARD=n
-CONFIG_INPUT_MOUSE=n
-
-# --- I2C: no I2C devices on this board ---
-CONFIG_I2C=n
-
-# --- GPIO / LEDs / watchdog: used ---
-CONFIG_LEDS_CLASS=y
-CONFIG_LEDS_GPIO=y
-CONFIG_WATCHDOG=y
-
-# --- Ethernet / WLAN ---
-CONFIG_ETHERNET=y
-CONFIG_WLAN=y
-
-# --- Our drivers ---
-CONFIG_PACKAGE_kmod_econet_eth=y
-CONFIG_PACKAGE_kmod_mt76=y
-CONFIG_PACKAGE_kmod_mt7603=y
-CONFIG_PACKAGE_kmod_mt7615=y
-CONFIG_PACKAGE_kmod_mt7663_firmware_ap=y
+# Flash tools: nand-utils for sysupgrade, mtd for econet-bootlog and
+# bootflag-commit (both call /sbin/mtd).
+CONFIG_PACKAGE_nand-utils=y
+CONFIG_PACKAGE_mtd=y
