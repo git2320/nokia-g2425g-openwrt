@@ -1,8 +1,116 @@
 #!/bin/sh
-# Mark the running OpenWrt image as committed in the boot flag, so the CFE
-# bootloader stops counting failed boots and will not revert to stock.
+# bootflag-commit - commit the running slot in the EcoNet/ASB dual-boot flag.
 #
-# Run this only after you have confirmed the box is reachable (Ethernet or
-# the G2425G-Recovery SSID). While the flag stays uncommitted, a broken
-# image auto-reverts to stock, which is our recovery path without serial.
-exec /etc/init.d/econet-commit start
+# The stock CFE increments boot_fail_num on every boot it does not consider
+# committed. When it reaches 9 (the same bootloader family's threshold,
+# BOOT_FAIL_THRESHOLD in the G-240G-E tcboot analysis), it flips next_active to
+# the other bank, marks this bank invalid and boots the other slot. So a working
+# image that never resets the counter disappears after nine power cycles.
+#
+# This tool writes the committed state to BOTH flag copies:
+#
+#   commit = bank, next_active = bank, image0_is_valid = 1,
+#   image1_is_valid = 1, boot_fail_num = 0, startready = bank
+#
+# Flag layout, verified against the stock dump (mtd10/mtd11, first 56 bytes,
+# little endian; the rest of the 128 KiB erase block is 0xFF):
+#
+#   0x00 u32 commit            committed bank index (0 = image0, 1 = linux)
+#   0x04 u32 next_active       bank the bootloader boots next
+#   0x08 u32 image0_is_valid   1 if image0 may be booted
+#   0x0c u32 image1_is_valid   1 if image1 may be booted
+#   0x10 u32 boot_fail_num     consecutive failed boots, reset on success
+#   0x14 u32 startready        bank the bootloader last started
+#   0x18 char image0_version[16]   CFE copies this from the TRX header
+#   0x28 char image1_version[16]
+#
+# CFE rewrites the version strings itself when it boots a slot (after our v2
+# flash the dump showed image1_version = "OpenWrt-r0-24c"), so they are
+# preserved here, not generated.
+#
+# Usage:
+#   bootflag-commit [-b 0|1] [-n] [-q]
+#     -b bank    slot to commit (default 1 = "linux", where this port installs)
+#     -n         dry run: build and show the block, write nothing
+#     -q         quiet (only errors)
+
+set -eu
+
+BANK=1
+DRY=0
+QUIET=0
+
+usage() {
+	sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+	exit 1
+}
+
+while getopts 'b:nq' opt 2>/dev/null; do
+	case "$opt" in
+	b) BANK=$OPTARG ;;
+	n) DRY=1 ;;
+	q) QUIET=1 ;;
+	*) usage ;;
+	esac
+done
+
+case "$BANK" in
+0) WORDS='\000\000\000\000\000\000\000\000\001\000\000\000\001\000\000\000\000\000\000\000\000\000\000\000' ;;
+1) WORDS='\001\000\000\000\001\000\000\000\001\000\000\000\001\000\000\000\000\000\000\000\001\000\000\000' ;;
+*) echo "bootflag-commit: bank must be 0 or 1" >&2; exit 2 ;;
+esac
+
+log() { [ "$QUIET" = 1 ] || logger -t bootflag-commit "$*"; [ "$QUIET" = 1 ] || echo "$*"; }
+
+find_mtd() {
+	sed -n "s/^\([^:]*\):.*\"$1\"\$/\1/p" /proc/mtd 2>/dev/null | head -n1
+}
+
+# Read the first erase block, patch the 24-byte header, erase, write it back.
+# Rewriting the whole block (instead of just 24 bytes) keeps anything the
+# vendor left in it, and never re-programs a page without erasing it first
+# (with on-die ECC that corrupts the page).
+write_one() {
+	name="$1"
+	dev=$(find_mtd "$name")
+	if [ -z "$dev" ]; then
+		echo "bootflag-commit: no \"$name\" partition in /proc/mtd" >&2
+		return 1
+	fi
+
+	blk=/tmp/.flag.$name.blk
+	exp=/tmp/.flag.$name.exp
+	got=/tmp/.flag.$name.got
+	trap 'rm -f "$blk" "$exp" "$got"' EXIT
+
+	dd if="/dev/$dev" of="$blk" bs=128k count=1 2>/dev/null || return 1
+	printf "$WORDS" > "$exp"
+	printf "$WORDS" | dd of="$blk" bs=1 seek=0 conv=notrunc 2>/dev/null || return 1
+
+	if [ "$DRY" = 1 ]; then
+		echo "bootflag-commit: $name -> /dev/$dev (dry run, block not written)"
+		return 0
+	fi
+
+	if command -v flash_erase >/dev/null 2>&1; then
+		flash_erase -N -q "/dev/$dev" 0 1 || return 1
+	elif command -v mtd >/dev/null 2>&1; then
+		mtd erase "$name" || return 1
+	else
+		echo "bootflag-commit: neither flash_erase nor mtd available" >&2
+		return 1
+	fi
+
+	dd if="$blk" of="/dev/$dev" bs=128k count=1 2>/dev/null || return 1
+	dd if="/dev/$dev" of="$got" bs=24 count=1 2>/dev/null || return 1
+	if ! cmp -s "$exp" "$got"; then
+		echo "bootflag-commit: $name read-back mismatch" >&2
+		return 1
+	fi
+	log "$name (/dev/$dev): committed bank $BANK"
+}
+
+write_one flag
+write_one flagback
+
+[ "$DRY" = 1 ] || log "boot_fail_num reset; CFE will not revert this slot"

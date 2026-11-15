@@ -1,0 +1,7 @@
+#!/bin/sh
+# Enable the boot-flag acknowledgement service.
+#
+# econet-commit only writes the flag once the LAN is up, so a broken image
+# still runs out CFE's nine-boot budget and reverts to stock.
+/etc/init.d/econet-commit enable
+exit 0

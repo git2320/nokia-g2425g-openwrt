@@ -1,76 +1,51 @@
 #!/bin/sh /etc/rc.common
-# Commit the OpenWrt slot in the ASB/EcoNet boot flag.
+# Acknowledge a successful boot in the EcoNet/ASB dual-boot flag.
 #
-# The stock CFE boots a newly flashed image a limited number of times and,
-# if userspace never "commits" it (stock firmware calls swdl_commit which
-# writes the flag partition), marks the image invalid and falls back to the
-# other slot.
+# Why this runs at every boot and not once:
 #
-# DELIBERATELY NOT RUN AT BOOT while the image is unproven: with no serial
-# console, CFE's boot-fail auto-revert is our only guaranteed recovery. If
-# this script committed on the first boot of a broken image we would be
-# locked into an unreachable OpenWrt. Once the box is reachable (Ethernet
-# or the G2425G-Recovery WiFi), run:
+#   CFE increments boot_fail_num on every boot it does not consider committed,
+#   and after 9 (the same bootloader family's threshold) it flips to the other
+#   bank and marks this one invalid. A one-shot commit therefore does not
+#   survive: a perfectly working OpenWrt is reverted to stock after nine power
+#   cycles. The counter has to be reset on each successful boot, which is
+#   exactly what stock firmware does through swdl_commit.
 #
-#     bootflag-commit
+#   Committing here does not remove the safety net, because this point is only
+#   reached when the image actually reached userspace *and* brought the LAN up.
+#   A kernel panic, a missing netifd or a dead Ethernet driver never gets here,
+#   so the counter keeps counting and CFE still reverts after nine failures.
 #
-# which sets commit=1, next_active=1, image0_valid=1, image1_valid=1,
-# boot_fail_num=0, active=1 so the loader keeps booting OpenWrt.
+# Manual use (force a commit even if the LAN check fails):
 #
-# Flag layout (64-byte struct at offset 0 of "flag"/"flagback", little endian):
-#   u32 commit, next_active, image0_valid, image1_valid, boot_fail_num, active
-#   then two 16-byte version strings (image0, image1)
-#
-# Note: busybox applets are limited - OpenWrt's busybox has no usable `od`
-# (BU-BOX default is off), so the six words are written as raw bytes and the
-# version strings are preserved verbatim.
+#   bootflag-commit          # commit bank 1 ("linux")
+#   bootflag-commit -b 0     # commit bank 0 ("image0")
+#   bootflag-commit -n       # dry run
 
 START=98
 
-# 6 x u32 LE: commit=1, next_active=1, image0_valid=1, image1_valid=1,
-#             boot_fail_num=0, active=1
-FLAGWORDS='\x01\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00'
-
-write_flag() {
-	local name="$1"
-	local d img=/tmp/.bootflag
-
-	d=$(grep "\"$name\"" /proc/mtd 2>/dev/null | sed 's/:.*//')
-	[ -n "$d" ] || { logger -t econet-commit "$name partition not found"; return 0; }
-
-	# Keep the version strings (bytes 24..63) intact.
-	dd if=/dev/$d of=$img bs=64 count=1 2>/dev/null || return 0
-	printf "$FLAGWORDS" | dd of=$img bs=1 seek=0 conv=notrunc 2>/dev/null
-
-	# flash_erase (nand-utils) can erase just the first block; fall back to
-	# the mtd utility which erases the whole (256 KiB) flag partition.
-	if command -v flash_erase >/dev/null 2>&1; then
-		flash_erase -N -q /dev/$d 0 1 2>/dev/null
-		dd if=$img of=/dev/$d bs=64 count=1 2>/dev/null
-	else
-		mtd write $img $name 2>/dev/null
+lan_reachable() {
+	# ubus knows the real state; fall back to the interface address in case
+	# ubus is not up yet or netifd uses a different interface name.
+	if command -v ubus >/dev/null 2>&1; then
+		ubus call network.interface.lan status 2>/dev/null \
+			| grep -q '"up": *true' && return 0
 	fi
-	rm -f $img
-}
-
-commit_once() {
-	write_flag flag
-	write_flag flagback
-
-	if command -v hexdump >/dev/null 2>&1; then
-		d=$(grep '"flag"' /proc/mtd 2>/dev/null | sed 's/:.*//')
-		[ -n "$d" ] && hexdump -C -n 32 /dev/$d 2>/dev/null | while read -r l; do
-			logger -t econet-commit "flag: $l"
-		done
-	fi
-	logger -t econet-commit "boot flag committed (commit=1, next_active=1, image1_valid=1, boot_fail_num=0)"
+	for dev in br-lan eth0; do
+		ip -4 addr show dev "$dev" 2>/dev/null | grep -q 'inet ' && return 0
+	done
+	return 1
 }
 
 boot() {
-	# Intentionally empty; see the header. Manual commit only.
-	:
+	if lan_reachable; then
+		logger -t econet-commit "LAN is up; committing bank 1 and resetting boot_fail_num"
+		/usr/sbin/bootflag-commit -q \
+			|| logger -t econet-commit "boot flag write failed"
+	else
+		logger -t econet-commit "LAN is not up; not committing (CFE keeps counting)"
+	fi
 }
 
 start() {
-	commit_once
+	exec /usr/sbin/bootflag-commit "$@"
 }
