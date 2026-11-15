@@ -55,6 +55,10 @@ boot() {
 	# The stock "log" partition; the OpenWrt mtd utility erases it first.
 	[ -n "$(grep '"log"' /proc/mtd 2>/dev/null)" ] || exit 0
 
+	# Immediate marker: proves userspace started even if it dies within 10s.
+	echo "=== OpenWrt userspace reached ($(date)) cmdline=$(cat /proc/cmdline) ===" > /tmp/.bootlog.probe
+	mtd write /tmp/.bootlog.probe log 2>/dev/null
+
 	sleep 10
 	snapshot > /tmp/.bootlog.early
 	mtd write /tmp/.bootlog.early log 2>/dev/null

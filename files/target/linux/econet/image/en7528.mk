@@ -39,8 +39,7 @@ define Device/nokia_g-2425g-a
   TRX_LOADADDR := 0x80002000
   KERNEL := kernel-bin | append-dtb | tclinux-free-bootbase-jump | lzma | \
     kernel-trx
-  DEVICE_PACKAGES := kmod-usb2 kmod-mt7603 kmod-mt7615e kmod-mt7663-firmware-ap \
-    nand-utils
+  DEVICE_PACKAGES := kmod-usb2 kmod-mt7603 kmod-mt7615e nand-utils
 endef
 TARGET_DEVICES += nokia_g-2425g-a
 
