@@ -37,8 +37,8 @@ define Device/nokia_g-2425g-a
   DEVICE_DTS := en7528_nokia_g2425g-a
   FACTORY_SIZE := 34m
   TRX_LOADADDR := 0x80002000
-  KERNEL := kernel-bin | append-dtb | tclinux-free-bootbase-jump | lzma | \
-    kernel-trx
+  KERNEL := kernel-bin | append-dtb | tclinux-free-bootbase-jump | \
+    lzma-no-dict -lc3 -lp0 -pb2 | kernel-trx
   # kmod-mt7663-firmware-ap is required for the 5 GHz MT7663 radio; without it
   # radio1 cannot probe, so the recovery SSID on 5 GHz never comes up.
   # mtd provides /sbin/mtd, used by econet-bootlog and the flag-commit helper.
@@ -52,8 +52,8 @@ define Device/jiofiber_en7528
   DEVICE_VENDOR := JioFiber
   FACTORY_SIZE := 40m
   TRX_LOADADDR := 0x80002000
-  KERNEL := kernel-bin | append-dtb | tclinux-free-bootbase-jump | lzma | \
-    kernel-trx
+  KERNEL := kernel-bin | append-dtb | tclinux-free-bootbase-jump | \
+    lzma-no-dict -lc3 -lp0 -pb2 | kernel-trx
   DEVICE_PACKAGES := kmod-usb3 kmod-mt7603 kmod-mt7615e kmod-mt7663-firmware-ap
 endef
 
