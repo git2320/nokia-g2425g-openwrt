@@ -158,12 +158,46 @@ to `gmac0`. Unchanged.
 **The MAC nvmem cell is correct.** `mtd12` (`ri`) at offset `0x3e` holds
 `5c:8c:30:be:cb:90`; the `macaddr@3e` / `mac-base` cell reads the right bytes.
 
-**The TRX header is accepted.** After the v2 flash the stock bootloader stored
-`image1_version = OpenWrt-r0-24c…`, i.e. it parsed our 256-byte `HDR2` header
-and its version field. 280 vs 256 bytes is not what stopped boot.
+**The TRX header version field was parsed, but the image was not accepted.**
+After the v2 flash the stock bootloader stored `image1_version =
+OpenWrt-r0-24c…` because the version field sits at 0x10 in *both* the 256- and
+280-byte layouts — that observation says nothing about the payload offset.
+CFE's payload start is hardcoded at **0x118 (280)** (see "CFE boot-path
+disassembly" below): with a 256-byte header CFE starts LZMA decoding 24 bytes
+into the stream header and dies silently. 280 vs 256 bytes *is* what stopped
+boot.
 
 **The partition map matches the dump.** All 16 entries verified against
 `mtd0..mtd14`: offsets, sizes, alignment; flash ends at `0xfaa0000` < 256 MiB.
+
+## CFE boot-path decompilation (REA MCP + Ghidra, 2026-11-17)
+
+The stock bootloader was decompressed and decompiled from the dumps to settle
+the remaining format questions with code, not inference. `mtd0` is a 128 KiB
+uncached first stage plus an LZMA-Alone stream at 0x20000 (props 0x5d, dict
+8 MiB, 269,376 B uncompressed). The decompressed body loads at **0x83FB0000**
+(base proven statistically: 544 in-image absolute references and 125 exact
+string hits; neighbouring bases score ~0). The following offsets are file
+offsets in that body.
+
+| Address | Finding |
+|---|---|
+| `0x1b30`, `0x1bf8` | **`addiu …, 280 (0x118)`** — the LZMA source start passed to the range setter is `flash_base + partition_offset + 0x118`. Both the main and the alternate path hardcode the 280-byte skip. This is the definitive proof that the payload must begin at 0x118. |
+| `0x18c8`, `0xa0f8` | `kernel_len` is read from **header+0x50** (`a0 = header+0x50`, then a 4-byte flash read) — the classic TRX field. |
+| `0x19a8`–`0x19c4` | CFE computes the source end as `s2 = (kernel_len + 0x10100) & 0xffff0000`, i.e. kernel_len rounded up to 64 KiB. Our padded `kernel_len = 0x400000 - 280` yields `s2 = 0x400000`, matching the rootfs boundary. Stock A (0x3ddbae) → 0x3E0000, stock B (0x3e8ac2) → 0x3F0000. |
+| `0x35680` | LZMA decoder wrapper: reads the 5-byte props/dict header and the 8-byte uncompressed size *from the stream itself*; source range from globals `0x83ff1c30`/`0x83ff1c34`; destination passed in `a0`, here **0x80020000**; allocator bounds printed as `free_mem_ptr=0x80e00000`, `free_mem_ptr_end=0x807b0000`. |
+| `0x5528`–`0x5548` | Image-accept path: compares magic `HDR2` (`0x32524448`), computes CRC over **`[header+0x118, header+total_len)`** with `jal 0x83fb7ae0`, and compares it with the field at **header+0x0c**. Exactly our JAMCRC layout. |
+| `0x690c`–`0x692c` | Second check accepts magic `0x32524448` (`HDR2`) or `0x33524448`, and rejects `total_len < 280 (0x118)`. |
+| `0x17c4`–`0x1804` | "Jump to %X" then `jalr` to a function pointer — the jump is indirect; our free-bootbase stub at the load address remains the right mechanism. |
+| `0x83fbb650` (0xb650) | The call after decompression is a **cache flush** (writes to `0xbc95xxxx`), not a decompressed-size check. No max-size rejection was found on the boot path. |
+
+No model/part-number validation, no props/dict whitelist beyond the stream
+fields, and no additional size gate exist on this path. Stock header fields at
+0x04 (hdr_len = 0x118), 0x10 (version), 0x50/0x54 (lengths), 0x7c (loadaddr
+0x80002000) and the 24-byte pad are all reproduced by `tclinux-trx.sh`; the
+CRC algorithm was re-derived from both stock slots (JAMCRC over the payload).
+**Conclusion: the committed fixes cover every bootloader requirement found;
+no further image change is needed for CFE to accept and decompress the kernel.**
 
 ## Changes in this commit
 
@@ -187,9 +221,13 @@ and its version field. 280 vs 256 bytes is not what stopped boot.
   non-overlapping, flash end `0xfaa0000`.
 * `sh -n` clean on every shell script in the tree.
 * Partition table compared field by field against the live `mtd0..mtd14` dumps.
-* `tclinux-trx.sh` read from upstream: 256-byte header, kernel padded to
-  `0x400000`, CRC over payload only — matches the layout PHASE4 verified on the
-  flashed file.
+* `tclinux-trx.sh` reviewed: 280-byte header (payload at 0x118), kernel padded
+  so `0x118 + kernel_len = 0x400000`, JAMCRC over the payload only. Verified
+  against both stock slots and against CFE's own CRC-accept path (see above).
+* `scripts/verify-image.py --self-test`: all boot-critical header fields pass
+  (hdr_len 280, dict 8 MiB, loadaddr 0x80002000, JAMCRC, DTB and UBI offsets).
+* Stock CFE (mtd0) decompressed from its LZMA stream and decompiled with
+  REA MCP + Ghidra 12.1.4; boot path mapped as tabulated above.
 * Driver source inspected to confirm the dumb-switch contract (above).
 * CI gate exercised locally against the real upstream
   `generic/config-6.18` + `econet/en7528/config-6.18` files and a synthetic
@@ -203,11 +241,16 @@ and its version field. 280 vs 256 bytes is not what stopped boot.
   and `.mk` edits are reviewed and dependency-checked, but not compiled.
 * **No flash.** The device is not reachable from here. The bootloader's
   auto-revert is unchanged, so an unproven image still falls back to stock.
-* **No decompilation of the stock kernel/bootloader.** REA on this host has no
-  Ghidra/IDA/rizin backend, and the bootloader second stage is encrypted. It is
-  also beside the point: the failure is in the build recipe, and the stock
-  binaries were only needed for the facts already extracted in PHASE2
-  (partition map, TRX layout, MAC offset, boot-flag struct).
+* **No decompilation of the stock *kernel*.** CFE's boot path was fully
+  decompiled with Ghidra 12.1.4 via REA MCP (the native decompiler was built
+  locally for arm64 — official zips ship only x86_64). `FUN_83fb1820` shows the
+  `+0x118` source start and `header+0x7c` destination in C; `FUN_83fb5208`
+  shows the CRC call `FUN_83fb7ae0(0x80020118, total_len-0x118, 1)` compared
+  against the header CRC; `FUN_83fe5680` reads props/size from the stream
+  itself and decodes to the load address with no additional size gate. See the
+  table above for addresses.
+* **No build / no flash / no on-device verification** (see the rest of this
+  section). Boot success can only be confirmed by flashing the next CI image.
 
 ## Next steps
 
