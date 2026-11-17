@@ -14,6 +14,21 @@ is everything that configures the network and the services on top of it.
 
 ## Root cause: `config.seed` deleted the network stack
 
+(Update 2026-11-17: the kernel coming up is only half the boot chain. Further
+defects, pinned against the stock dumps, meant the *bootloader* may never even
+have started our kernel — the "WLAN LED flashed" behaviour previously read as
+a partial boot is at least as consistent with stock reverting. See
+PHASE4-FLASH.md "Update 2026-11-17": (1) certain — our TRX header was 256
+bytes where stock images and the vendor userspace use a 280-byte header with
+the payload at 0x118; a 256-byte header makes CFE read the LZMA stream 24
+bytes into a wrong position and die silently; (2) operational — `oflt
+change_boot_flag` runs the nonexistent `swug` and reboots without switching;
+the staged-flag script (`scripts/stage-openwrt-slot.sh`) replaces it; (3)
+possible but countered — the EN751221-family "A-length bug" would truncate
+our kernel stream, but stock slot B's stream already exceeds the would-be cap
+and boots, so it likely does not apply here; `--patch-a` is harmless
+insurance.)
+
 `config.seed` (v2/v4) contained:
 
 ```
@@ -200,6 +215,12 @@ and its version field. 280 vs 256 bytes is not what stopped boot.
 2. Confirm the manifest/artifact contains `netifd`, `firewall4`, `dnsmasq`,
    `ubus`, `ubusd`, `kmod-mt7663-firmware-ap`, `mtd`.
 3. Flash the inactive slot exactly as in PHASE4 (fwtool3, keep `commit=0`).
+3a. **Stage the flag before rebooting** (`sh /tmp/stage-openwrt-slot.sh
+   --patch-a`): the old `oflt change_boot_flag` switch step was a no-op
+   (`swug` missing from the stock rootfs), and `--patch-a` is optional
+   insurance against the A-length bug. See PHASE4-FLASH.md,
+   "Update 2026-11-17" for the boot-chain root causes and their dump
+   evidence (280-byte header, no-op switch, A-length counter-evidence).
 4. First boot: `br-lan` on 192.168.1.1 with DHCP; `G2425G-Recovery` (2.4 GHz)
    and/or `G2425G-Recovery-5G` visible.
 5. Log in (`root` / `nokia2425`, change it), then run `bootflag-commit` only

@@ -10,10 +10,41 @@ set -e
 #       slot B. By including the padding in the length, the kernel length is
 #       always the same, and the LZMA decompressor stops when it's done anyway.
 #       See: https://econet-linux.pkt.wiki/en/bootloader#a-length-bug
+#
+#       The padding only helps when BOTH slots carry a padded length. The
+#       A-length bug described at
+#       https://econet-linux.pkt.wiki/en/bootloader#a-length-bug makes some
+#       bootloaders of this family read kernel_len from slot A even when
+#       booting slot B, truncating slot B's LZMA stream. Whether it applies
+#       HERE is unclear: stock slot B (mtd3, JJIJ50) declares a 4,098,754-byte
+#       stream while slot A (mtd2, HK46) declares kernel_len 0x3ddbae, and
+#       stock boots from slot B anyway - so this board's bootloader probably
+#       reads the length from the slot it boots. The check below only WARNS
+#       (CI stays green); scripts/stage-openwrt-slot.sh --patch-a can raise
+#       slot A's kernel_len to a full 4 MiB as harmless insurance.
 PAD_ROOTFS_OFFSET_TO=$((4 * 1024 * 1024))
 
-# Constant
-HDRLEN=256
+# kernel_len stock firmware declares in slot A ("image0", 3FE49362IJHK46 dump)
+SLOT_A_STOCK_LEN=$((0x3ddbae))
+# bytes the A-length bug would feed the decoder when booting slot B:
+# kernel_len - 0x18, because the bug's end pointer is kernel_len + 0x100 while
+# the payload starts at the 280-byte header (see HDRLEN below).
+SLOT_B_FEED_LEN=$((SLOT_A_STOCK_LEN - 0x18))
+
+# TRX header size.
+#
+# The vendor struct is 280 bytes, not the 256 of the classic 2010 trx.h:
+#   * stock images for this board (mtd2/mtd3/mtd5 dumps) all declare
+#     hdr_len=280 and start the LZMA payload at offset 0x118;
+#   * vendor userspace libupgradeimpl.so image_check fread()s exactly 0x118
+#     bytes and fails unless it gets them (280-byte struct, magic checked at
+#     offset 0);
+#   * the bootloader uses the same SDK headers, and a 256-byte header would
+#     make it read the LZMA stream 24 bytes too early (0x00 props byte, 0-size
+#     field) which cannot boot - yet stock boots.
+# So the payload must start at 0x118: write 256 bytes of fields + 24 zero pad.
+HDRLEN=280
+HDRPAD=$((HDRLEN - 256))
 
 die() {
     echo "$1" >&2
@@ -105,6 +136,20 @@ if [ -f "$rootfs" ]; then
 fi
 
 [ "$PAD_ROOTFS_OFFSET_TO" -gt "$header_plus_kernel_len" ] || die "kernel is too large"
+
+# Informational only: the A-length bug (documented for the EN751221 GPL
+# bootloader) would truncate slot B's stream at SLOT_B_FEED_LEN bytes, but
+# stock slot B's stream (4,098,754 bytes) already exceeds that cap and boots,
+# so this board's bootloader probably does not have the bug. The warning
+# stays as a pointer to the (harmless) insurance patch.
+if [ "$kernel_len" -gt "$SLOT_B_FEED_LEN" ]; then
+    echo "WARNING: kernel stream is $kernel_len bytes; IF this bootloader has the" >&2
+    echo "         A-length bug, slot A (stock, kernel_len 0x3ddbae) would truncate" >&2
+    echo "         slot B's stream at $SLOT_B_FEED_LEN bytes. Stock evidence suggests" >&2
+    echo "         the bug does not apply here, but running" >&2
+    echo "         scripts/stage-openwrt-slot.sh --patch-a before the first reboot" >&2
+    echo "         is harmless insurance." >&2
+fi
 
 padding_len=$(($PAD_ROOTFS_OFFSET_TO - $header_plus_kernel_len))
 
@@ -210,6 +255,9 @@ tclinux_trx_hdr() {
 
     # "reserved" 128 bytes of zeros
     head -c 128 /dev/zero | to_hex
+
+    # trailing header padding up to 280 bytes (vendor struct extension)
+    head -c "$HDRPAD" /dev/zero | to_hex
 }
 
 tclinux_trx_hdr | from_hex

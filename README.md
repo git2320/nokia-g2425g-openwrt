@@ -16,7 +16,10 @@ goal of this port is to use the device as a router / WiFi repeater / dumb AP.
 | `.github/workflows/build.yml` | Builds the image on GitHub Actions |
 | `PHASE2-FINDINGS.md` | Hardware reverse-engineering notes (flash map, image format, OTP cal) |
 | `PHASE3-BUILD.md` | Port/build notes and flash plan |
+| `PHASE4-FLASH.md` | Flash runbook + post-flash findings + dump-evidence fixes |
 | `PHASE5-BOOT-CAUSE.md` | **Why v2/v4 never came up + what changed in this commit** |
+| `scripts/verify-image.py` | Offline check that a built TRX is bootable (run `--self-test`) |
+| `scripts/stage-openwrt-slot.sh` | Run **on stock firmware** after flashing: stages the boot flag (mtd10/11), optionally raises slot A's `kernel_len` as insurance |
 
 Device files (already upstream-compatible structure):
 
@@ -54,8 +57,25 @@ artifact (Actions tab → run → artifacts).
 `PHASE5-BOOT-CAUSE.md` first: the previous images booted but had no network
 stack at all (their `config.seed` deleted `ubus`/`ubusd`/`libuci`, which makes
 kconfig drop `netifd`, `firewall4` and `dnsmasq`). That is fixed here, but the
-image is still unbuilt and unflashed. The stock bootloader's tolerance of
-OpenWrt's 256-byte TRX header and its version/flag validation remain only
-partly verified. Full NAND backup (15 partitions) is mandatory before any
-write. A USB-TTL serial adapter is strongly recommended as the only real
-recovery path.
+image is still unbuilt and unflashed.
+
+Boot-chain fixes pinned against the stock dumps (2026-11-17, see
+`PHASE4-FLASH.md` "Update 2026-11-17"):
+
+- The TRX header on this board is **280 bytes** (payload at 0x118), not the
+  classic 256 — `tclinux-trx.sh` and `verify-image.py` now match the stock
+  images and the vendor `libupgradeimpl.so` struct exactly.
+- `oflt change_boot_flag` is a **no-op** on this firmware (`swug` is missing
+  from the stock rootfs). Use `scripts/stage-openwrt-slot.sh` after flashing
+  and before the first reboot: it stages `commit=0, next_active=1, both
+  slots valid, boot_fail_num=0` into both flag copies (mtd10/mtd11) via
+  `/dev/mtdblockN`, with read-back verification, so CFE boots OpenWrt while
+  the auto-revert-to-stock safety net stays armed.
+- The EN751221-family "A-length bug" (kernel_len always read from slot A)
+  probably does **not** apply to this board: stock slot B's stream
+  (4,098,754 bytes) exceeds slot A's declared 0x3ddbae and boots anyway.
+  `--patch-a` (raise slot A's `kernel_len` to 4 MiB) is kept as harmless
+  insurance; the build only warns.
+
+Full NAND backup (15 partitions) is mandatory before any write. A USB-TTL
+serial adapter is strongly recommended as the only real recovery path.

@@ -5,7 +5,8 @@ Checks only what the stock CFE actually enforces (or what we measured on the
 stock dump), so a pass means "the bootloader will accept this file", not just
 "the file looks nice":
 
-  * "HDR2" little-endian TRX header, 256 bytes, total length consistent;
+  * "HDR2" little-endian TRX header, 280 bytes (vendor struct), total length
+    consistent;
   * CRC accepted the way CFE accepts it (JAMCRC, as zytrx writes it; the plain
     CRC-32 is also tolerated because tcboot accepts both);
   * kernel length padded so that hdr_len + kernel_len == 4 MiB, which is where
@@ -32,7 +33,7 @@ import struct
 import sys
 import zlib
 
-HDR_LEN = 256
+HDR_LEN = 280                      # vendor struct size (stock images + libupgradeimpl.so)
 ROOTFS_OFFSET = 0x400000           # UBI partition offset inside the slot
 KERNEL_PAD = ROOTFS_OFFSET - HDR_LEN
 FACTORY_SIZE = 0x2200000           # "linux"/"image0" slot size
@@ -42,6 +43,14 @@ JUMP_WORD = 0x08008000             # j 0x80020000, little endian
 # Decompressed size of the stock 3FE49362JJIJ50 kernel, i.e. a value the loader
 # is known to handle on this board.
 STOCK_KERNEL_SIZE = 11155392
+# Compressed-stream bound that WOULD apply while slot A ("image0") still
+# holds stock IF this bootloader has the A-length bug documented for the
+# EN751221 GPL variant (reads kernel_len from slot A before choosing the
+# slot). Counter-evidence on this board: stock slot B's stream is 4,098,754
+# bytes > this cap and stock boots from slot B anyway, so the bug probably
+# does not apply here. Reported only as a warning; --patch-a in
+# scripts/stage-openwrt-slot.sh is harmless insurance either way.
+SLOT_A_FEED = 0x3ddbae - 0x18
 
 
 def jamcrc(data):
@@ -55,9 +64,10 @@ def plaincrc(data):
 def verify(buf, expect_strings=(), max_kernel=STOCK_KERNEL_SIZE):
     problems = []
     facts = []
+    warnings = []
 
     if len(buf) < HDR_LEN:
-        return ["file is shorter than a TRX header (256 bytes)"], facts
+        return ["file is shorter than a TRX header (280 bytes)"], facts, warnings
     if len(buf) > 265 and buf[257:262] == b"ustar":
         return ["this is a sysupgrade tar, not a raw TRX: write *tclinux.trx "
                 "into the slot, sysupgrade.bin is for a running OpenWrt"], facts
@@ -77,7 +87,9 @@ def verify(buf, expect_strings=(), max_kernel=STOCK_KERNEL_SIZE):
         problems.append("magic is %r, expected b'HDR2' (this board is little "
                         "endian; b'2RDH' would be the big-endian twin)" % magic)
     if hdr_len != HDR_LEN:
-        problems.append("hdr_len is %d, expected %d" % (hdr_len, HDR_LEN))
+        problems.append("hdr_len is %d, expected %d (vendor struct size: stock "
+                        "images and libupgradeimpl.so both use 280)"
+                        % (hdr_len, HDR_LEN))
     if klen != KERNEL_PAD:
         problems.append("kernel_len is 0x%x, expected 0x%x (4 MiB rootfs "
                         "offset minus the header); any other value moves the "
@@ -154,6 +166,22 @@ def verify(buf, expect_strings=(), max_kernel=STOCK_KERNEL_SIZE):
                 problems.append("LZMA size field is %d but the stream decodes to "
                                 "%d bytes" % (size, len(kernel)))
 
+        if len(raw) > SLOT_A_FEED:
+            warnings.append("kernel stream is %d bytes > the A-length-bug cap of "
+                            "%d (EN751221-family bug; stock evidence suggests it "
+                            "does not apply on this board). Harmless insurance: "
+                            "scripts/stage-openwrt-slot.sh --patch-a"
+                            % (len(raw), SLOT_A_FEED))
+        else:
+            facts.append("kernel stream %d bytes under the A-length-bug cap "
+                         "(%d)" % (len(raw), SLOT_A_FEED))
+
+        pad = buf[256:min(280, len(buf))]
+        if pad and pad != b"\x00" * len(pad):
+            problems.append("header bytes 0x100..0x117 are not zero (%r): the "
+                            "vendor 280-byte header ends with 24 zero pad bytes"
+                            % pad[:8])
+
         if kernel:
             facts.append("kernel decompresses to %d bytes" % len(kernel))
             if len(kernel) > max_kernel:
@@ -186,7 +214,7 @@ def verify(buf, expect_strings=(), max_kernel=STOCK_KERNEL_SIZE):
         else:
             facts.append("UBI image at 0x%x" % ustart)
 
-    return problems, facts
+    return problems, facts, warnings
 
 
 def make_image(with_stub=True):
@@ -208,6 +236,7 @@ def make_image(with_stub=True):
     hdr += struct.pack("<III", KERNEL_PAD, len(ubi), 0)
     hdr += b"G-2425G-A".ljust(32, b"\x00")
     hdr += struct.pack("<I", LOADADDR) + b"\x00" * 128
+    hdr += b"\x00" * 24                            # 280-byte vendor header pad
     assert len(hdr) == HDR_LEN, len(hdr)
     return hdr + payload
 
@@ -215,7 +244,7 @@ def make_image(with_stub=True):
 def self_test():
     good = make_image()
 
-    problems, facts = verify(good, expect_strings=("linux_kernel", "ubi"))
+    problems, facts, warnings = verify(good, expect_strings=("linux_kernel", "ubi"))
     if problems:
         print("self-test FAILED on a valid image:")
         for p in problems:
@@ -223,11 +252,13 @@ def self_test():
         return 1
     for f in facts:
         print("  ok:", f)
+    for w in warnings:
+        print("  warn:", w)
 
     def expect(name, mutate, needle):
         broken = bytearray(good)
         mutate(broken)
-        problems, _ = verify(bytes(broken), expect_strings=("linux_kernel",))
+        problems, _, _ = verify(bytes(broken), expect_strings=("linux_kernel",))
         if not any(needle in p for p in problems):
             print("self-test FAILED: %s was not detected" % name)
             return False
@@ -243,7 +274,7 @@ def self_test():
                                          b"\xff" * 8),
                  "no uncompressed size")
     no_stub = make_image(with_stub=False)
-    problems, _ = verify(no_stub, expect_strings=("linux_kernel",))
+    problems, _, _ = verify(no_stub, expect_strings=("linux_kernel",))
     if not any("free-bootbase-jump" in p for p in problems):
         print("self-test FAILED: missing jump stub was not detected")
         ok = False
@@ -272,13 +303,15 @@ def main():
 
     with open(args.image, "rb") as fh:
         buf = fh.read()
-    problems, facts = verify(
+    problems, facts, warnings = verify(
         buf,
         expect_strings=[s for s in args.expect.split(",") if s],
         max_kernel=args.max_kernel,
     )
     for f in facts:
         print("  .", f)
+    for w in warnings:
+        print("  WARN:", w)
     if problems:
         for p in problems:
             print("FAIL:", p)

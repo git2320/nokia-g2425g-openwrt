@@ -19,13 +19,17 @@ Slots (from `/proc/mtd`, 128 KiB erasesize):
 | `linux` (mtd3) | 0x2280000 | 0x2200000 | **active** slot, stock 3FE49362JJIJ50 full TRX |
 | `rootfs` (mtd4) | 0x4480000 | 0x1e20000 | stock squashfs — stock `/dev/root`, NEVER TOUCH |
 | `image_oflt` (mtd9) | 0x6260000 | 0xf00000 | factory OFLT image |
-| `flag` (mtd13) / `flagback` (mtd14) | 0x8ba0000 | 0x40000 | boot flags |
+| `flag` (mtd10) / `flagback` (mtd11) | 0x8ba0000 / 0x8be0000 | 0x40000 each | boot flags |
+
+(Correction 2026-11-17: an earlier revision of this table said flag = mtd13/mtd14;
+the full dump of all 15 partitions shows `flag` = **mtd10** @0x8ba0000 and
+`flagback` = **mtd11** @0x8be0000, 0x40000 each, mtd12/13/14 are `ri`/`riback`/`data`.)
 
 OpenWrt image = upstream `tclinux` format, whole-file write to `linux` (mtd3):
 
 ```
-0x000000  HDR2 header (256 B)
-0x000100  kernel, FF-padded
+0x000000  HDR2 header (280 B: 256 B of fields + 24 zero pad bytes)
+0x000118  kernel, FF-padded
 0x400000  UBI blob ("UBI#" magic verified at this offset)
 0x960000  end of file (~10 MB); mtd3 remainder erased to FF
 ```
@@ -51,12 +55,22 @@ the stock `rootfs` partition — image0 stays a genuine recovery slot.
 
 ### Phase A — rehearsal (no flashing)
 
-1. From current JJIJ50 telnet: `oflt change_boot_flag` → ONT reboots into image0 (IJHK46).
+1. **Do NOT use `oflt change_boot_flag` to switch slots — it is a no-op on this
+   firmware.** `lib/liboflt.so` `oflt_change_boot_flag` merely runs
+   `system("swug --im inactive --activate"); system("reboot");` and **`swug`
+   does not exist anywhere in the stock rootfs** (verified by a full
+   unsquashfs listing of mtd4 plus a content grep). The command reboots
+   without switching anything.
+   To rehearse the switch instead, stage image0 with the flag script:
+   `sh stage-openwrt-slot.sh` variant for bank 0 (or `Imagetool switch`, the
+   stock path that `swdl_active` uses), then reboot into IJHK46.
 2. Verify image0: web UI up, telnet obtainable (web CGI), `oflt change_boot_flag` present.
 3. Confirmed recovery path in hand before any flash byte is written.
 
 ### Phase B — flash (from image0, mtd3 inactive)
 
+0. Push `stage-openwrt-slot.sh` to the ONT while you still have shell
+   (`curl -o /tmp/stage-openwrt-slot.sh http://192.168.1.3:8000/stage-openwrt-slot.sh`);
 1. Laptop: `cd /tmp/opencode/ghimg/econet/en7528 && python3 -m http.server 8000`
    (bind 192.168.1.3, wired to ONT).
 2. ONT: `curl -o /tmp/openwrt.trx http://192.168.1.3:8000/openwrt-econet-en7528-nokia_g-2425g-a-squashfs-tclinux.trx`
@@ -66,14 +80,25 @@ the stock `rootfs` partition — image0 stays a genuine recovery slot.
 5. Write: `/tmp/fwtool write /dev/mtd3 0 /tmp/openwrt.trx`
 6. Verify: `/tmp/fwtool verify /dev/mtd3 0 <file size> /tmp/openwrt.trx`
 7. Spot-check CRC32 of first 0x40000 vs local computation.
-8. `sync`
+8. **Stage the flag (MANDATORY, replaces the old "switch" step):**
+   `sh /tmp/stage-openwrt-slot.sh --patch-a`
+   This writes `commit=0, next_active=1, image0_is_valid=1, image1_is_valid=1,
+   boot_fail_num=0` into BOTH flag copies (mtd10 + mtd11, via `/dev/mtdblockN`
+   since stock has no `mtd`/`flash_erase`/`nandwrite` applets), and — with
+   `--patch-a` — raises slot A's `kernel_len` (mtd2 offset 0x50) from the stock
+   `0x3ddbae` to `0x400000` (needs `/tmp/fwtool3`; plain MEMERASE returns
+   EINVAL on image slots). The patch is optional insurance against the
+   A-length bug (see below); the flag staging is not optional.
+9. `sync`
 
 ### Phase C — switch
 
-1. From image0 telnet: `oflt change_boot_flag` → boots `linux` slot (OpenWrt).
+1. `reboot` → CFE boots the `linux` slot (OpenWrt) because `next_active=1`.
 2. OpenWrt first boot: LAN up (eth0-3 bridged LAN, 192.168.1.1), LEDs, `uci` state.
-3. If OpenWrt fails to boot: CFE boot_fail mechanism / change_boot_flag back to
-   image0 once any shell is reachable; CFE web recovery as last resort.
+3. If OpenWrt fails to boot: CFE boot_fail mechanism auto-reverts to stock
+   (observed on hardware with v2); after ~N failed boots the flag returns to
+   `commit=0, next_active=0, image0_is_valid=1, image1_is_valid=0` and stock
+   comes back on its own. CFE web recovery as last resort.
 
 ### Post-flash
 
@@ -242,3 +267,70 @@ both flag copies. Until then every bad boot self-reverts to stock.
 Do not reuse v4's `config.seed`: it deleted `ubus`/`ubusd`/`libubus`/`libuci`,
 so the built image had no `netifd`, `firewall4` or `dnsmasq`. The "link up, no
 traffic" symptom was missing userspace, not a broken DSA/dumb-switch DTS.
+
+## Update 2026-11-17 — dump-evidence fixes: 280-byte header, A-length cap, no-op switch
+
+Three defects in the previous runbook/image, all pinned against the stock dumps
+(mtd2/mtd3/mtd5 TRX images, mtd4 rootfs, mtd10/mtd11 flags) and the vendor
+userspace from the rootfs squashfs:
+
+### 1. The TRX header is 280 bytes, not 256
+
+- All three stock images declare `hdr_len=280` and start the LZMA payload
+  (props `0x5d`, recorded size) at offset **0x118**; bytes 0x100–0x117 are zero.
+- Vendor userspace agrees: `lib/libupgradeimpl.so` `image_check` `fread()`s
+  exactly `0x118` bytes as the header and fails otherwise — the vendor struct
+  is 280 bytes, not the 256 of the classic 2010 `trx.h`.
+- Stock boots with the payload at 0x118, so the bootloader must read it there.
+  A 256-byte header would make CFE read the LZMA stream 24 bytes early
+  (props byte 0x00, size 0) → silent decompression failure — which matches
+  the "kernel does not boot at all" symptom of v2/v4.
+
+`files/target/linux/econet/image/tclinux-trx.sh` now writes `HDRLEN=280`
+(256 bytes of fields + 24 zero pad). `scripts/verify-image.py` checks it
+(`HDR_LEN=280`, plus a zero-pad check for bytes 0x100–0x117).
+
+### 2. A-length bug: documented for the family, with counter-evidence HERE
+
+The GPL bootloader source (`cjdelisle/EN751221-Linux26`, `bootram/init/main.c`)
+reads `kernel_len` from **slot A (image0)** *before* the flag decides which
+slot to boot, and the econet-linux wiki documents this "A-length bug" for many
+bootloaders of the family: a slot B stream longer than slot A's `kernel_len`
+is truncated mid-flight and boot dies in the decompressor.
+
+**Counter-evidence on this board:** stock slot B (mtd3, JJIJ50) declares a
+4,098,754-byte kernel stream (`kernel_len=0x3e8ac2`, no FF padding — total =
+hdr + kernel + rootfs exactly) while slot A (mtd2, HK46) declares
+`kernel_len=0x3ddbae` (4,055,470). Under the bug, booting B would truncate
+B's stream by ~43 KB and stock B could not boot — yet stock boots from B.
+So this board's bootloader probably reads the length from the slot it
+actually boots, and the cap likely does not apply.
+
+Handling: `tclinux-trx.sh` prints a build **warning** (CI stays green) when
+the stream exceeds the would-be cap, and `scripts/stage-openwrt-slot.sh
+--patch-a` optionally raises slot A's `kernel_len` to `0x400000` as harmless
+insurance (safe for stock A: the LZMA decoder stops at its recorded size, and
+`checkimage`'s CRC covers `total_len`, which `kernel_len` does not touch).
+
+### 3. `oflt change_boot_flag` is a no-op on this firmware
+
+`lib/liboflt.so` `oflt_change_boot_flag` (`0x136c8`) runs
+`system("swug --im inactive --activate"); system("reboot");` — and **`swug`
+does not exist anywhere in the stock rootfs** (full unsquashfs listing of
+mtd4 + content grep). The old "Phase C switch" step therefore only rebooted
+into stock. The stock switching path is `Imagetool switch` / `swdl_active`
+(sets `commit`, `next_active`, both `_is_valid=1`, `boot_fail_num=0`, writes
+both flag copies via the vendor `ioctl _IOR('M',1,...)`).
+
+`scripts/stage-openwrt-slot.sh` reproduces that state on-box without any
+stock tools: it dd-reads the first 128 KiB of `flag` (mtd10) and `flagback`
+(mtd11) through `/dev/mtdblockN`, patches words 0–4 to
+`commit=0, next_active=1, image0_is_valid=1, image1_is_valid=1,
+boot_fail_num=0` (word 5 "startready" and the version strings at 0x18/0x28
+are preserved), writes the block back, and verifies through the char device
+read-back. Run it **after flashing, before the first reboot**.
+
+Stock-side housekeeping worth knowing: `usr/exe/autocommit.sh` commits the
+running slot at boot (`Imagetool commit <n>`) and
+`usr/exe/clean_boot_fail_counter.sh` resets the fail counter 70 s after boot
+(`Imagetool update`) — stock's equivalents of our `econet-commit`.
