@@ -252,6 +252,49 @@ no further image change is needed for CFE to accept and decompress the kernel.**
 * **No build / no flash / no on-device verification** (see the rest of this
   section). Boot success can only be confirmed by flashing the next CI image.
 
+## Persistent boot logging (bootloop diagnosis)
+
+`CONFIG_PANIC_TIMEOUT=1` in upstream `generic/config-6.18` reboots the board one
+second after any panic. A bootloop therefore never reaches userspace, so the
+`econet-bootlog` service (START=11) never runs and the cause is lost. The port
+now has three layers, oldest first:
+
+1. **Kernel pstore/ramoops.** `CONFIG_PSTORE`, `CONFIG_PSTORE_RAM` and
+   `CONFIG_PSTORE_CONSOLE` are appended to every `target/linux/econet/en7528/config-*`
+   by CI. The DTS reserves 1 MiB at physical `0x08000000` as a `ramoops` node
+   (128 KiB records, 256 KiB console, 128 KiB pmsg). That address is inside the
+   256 MiB RAM but above the decompressed kernel (from `0x20000`, < ~16 MiB)
+   and above CFE's private area (~64 MiB, `0x83fb0000` base).
+2. **Earliest userspace marker.** `lib/preinit/05_bootlog_early` is sourced by
+   `/etc/preinit`, i.e. before any network or WiFi setup. It writes a
+   `PREINIT reached` line (cmdline, uptime, meminfo) straight to the `log` MTD
+   partition and copies any pstore records left by the *previous* boot into the
+   same partition. This is how a panic survives the 1 s reboot: the kernel
+   writes it to reserved RAM, the next boot's preinit moves it to flash.
+3. **Full snapshot.** `econet-bootlog` (START=11) writes dmesg, logread,
+   netdev/wireless state, `uci show network wireless`, modules, the raw boot
+   flag and the pstore contents to the same partition immediately, then again at
+   +10 s and +80 s. If userspace dies at START=12 or later, the immediate copy
+   is already on flash.
+
+Reading the result after CFE has reverted to stock:
+
+    dd if=/dev/mtd7 bs=128k count=16 2>/dev/null | strings | less
+
+| Observation | Meaning |
+|---|---|
+| no marker at all | kernel died before userspace; only ramoops explains it |
+| `PREINIT reached` present, no snapshot | userspace started, then died (panic/watchdog) before START=11 |
+| snapshot present, `br-lan` missing | kernel and userspace are fine; network config problem |
+| `br-lan` present, no `mt76` netdevs | wireless driver or firmware problem |
+
+Files added/changed for this: `files/root-overlay/lib/preinit/05_bootlog_early`
+(new), `files/root-overlay/etc/init.d/econet-bootlog` (rewritten),
+`files/target/linux/econet/en7528/kernel-config-pstore` (new),
+`files/target/linux/econet/dts/en7528_nokia_g2425g-a.dts` (`reserved-memory`
+ramoops node), `.github/workflows/build.yml` (append the fragment, verify
+`CONFIG_PSTORE*`).
+
 ## Next steps
 
 1. Push this commit; GitHub Actions must pass `Verify boot-critical config`.

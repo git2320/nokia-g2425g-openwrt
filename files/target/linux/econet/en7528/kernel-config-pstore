@@ -1,0 +1,12 @@
+# Persistent panic/oops logging for the Nokia G-2425G-A bootloop diagnosis.
+#
+# Appended by CI to target/linux/econet/en7528/config-6.18.  The generic
+# config leaves CONFIG_PSTORE unset and sets CONFIG_PANIC_TIMEOUT=1, so a
+# panic reboots the board before any userspace logger can run.  ramoops
+# writes the panic (and the last console lines) into the reserved RAM block
+# declared in the DTS; the next boot's preinit hook copies those records
+# to the "log" MTD partition.
+
+CONFIG_PSTORE=y
+CONFIG_PSTORE_RAM=y
+CONFIG_PSTORE_CONSOLE=y

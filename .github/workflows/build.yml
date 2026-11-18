@@ -40,6 +40,13 @@ jobs:
              target/linux/econet/base-files/etc/board.d/
           cp -v port/files/target/linux/econet/base-files/lib/upgrade/platform.sh \
              target/linux/econet/base-files/lib/upgrade/
+          # Enable persistent panic/oops logging (ramoops). Append to every
+          # en7528 kernel config so it survives a kernel version bump.
+          for c in target/linux/econet/en7528/config-*; do
+            [ -f "$c" ] || continue
+            printf '\n# --- persistent boot logging (port overlay) ---\n' >> "$c"
+            cat port/files/target/linux/econet/en7528/kernel-config-pstore >> "$c"
+          done
           mkdir -p files
           cp -Rv port/files/root-overlay/. files/
           chmod 755 files/etc/uci-defaults/99-wifi-recovery \
@@ -108,6 +115,13 @@ jobs:
           need_kernel CONFIG_MTD_SPI_NAND
           need_kernel CONFIG_MTD_UBI
           need_kernel CONFIG_UBIFS_FS
+
+          # Panic/oops records must survive CONFIG_PANIC_TIMEOUT=1: without
+          # pstore the board reboots a second after a panic and the cause is
+          # lost before any userspace logger can run.
+          need_kernel CONFIG_PSTORE
+          need_kernel CONFIG_PSTORE_RAM
+          need_kernel CONFIG_PSTORE_CONSOLE
 
           # Networking core: netifd needs +libubus +ubus +ubusd +libuci and
           # dnsmasq needs +libubus/@IPV6, so pruning any of them silently

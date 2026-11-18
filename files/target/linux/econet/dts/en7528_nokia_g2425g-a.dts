@@ -36,6 +36,26 @@
 		reg = <0x00000000 0x10000000>;
 	};
 
+	/* Persistent panic/oops console log that survives a watchdog reset.
+	 * CONFIG_PANIC_TIMEOUT=1 reboots the board a second after a panic, so
+	 * without this the cause is lost before any userspace logger can run.
+	 * 0x08000000 (128 MiB) is inside the 256 MiB RAM but above both the
+	 * decompressed kernel (< ~16 MiB from 0x20000) and CFE's private area
+	 * (~64 MiB, see the 0x83fb0000 base in the stock bootloader). */
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		ramoops@8000000 {
+			compatible = "ramoops";
+			reg = <0x08000000 0x00100000>;
+			record-size = <0x00020000>;
+			console-size = <0x00040000>;
+			pmsg-size = <0x00020000>;
+		};
+	};
+
 	chosen {
 		stdout-path = "/serial@1fbf0000:115200";
 		linux,usable-memory-range = <0x00020000 0x0ffe0000>;

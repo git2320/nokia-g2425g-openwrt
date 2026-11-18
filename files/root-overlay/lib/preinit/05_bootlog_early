@@ -1,0 +1,58 @@
+# Early boot diagnostics for the Nokia G-2425G-A.
+#
+# OpenWrt's generic config sets CONFIG_PANIC_TIMEOUT=1, so a kernel panic
+# reboots the board within a second -- long before /etc/init.d/econet-bootlog
+# (START=11) can run.  This hook is sourced by /etc/preinit, i.e. it runs as
+# soon as userspace starts, before any network or WiFi setup.
+#
+# Two things happen here:
+#   1. An immediate marker is written to the stock "log" MTD partition.  If
+#      this marker is present after a failed boot we know the kernel got as
+#      far as userspace; if it is absent the failure happened in the kernel.
+#   2. Any pstore/ramoops records left by the *previous* boot are copied into
+#      the same partition.  This is how a panic/oops message survives a
+#      watchdog reset: the kernel wrote it to reserved RAM, and the next
+#      boot's preinit copies it to flash before it too may fail.
+#
+# Read the result from the stock firmware after CFE has reverted:
+#   dd if=/dev/mtd7 bs=128k count=16 2>/dev/null | strings | less
+
+bootlog_early() {
+	local logdev mnt=/sys/fs/pstore f marker=/tmp/.bootlog.early
+
+	# Find the log partition by NAME, never by a hardcoded mtd number.
+	[ -r /proc/mtd ] || return 0
+	logdev=$(sed -n 's/^mtd\([0-9]*\):.*"log"/\/dev\/mtdblock\1/p' /proc/mtd | head -n1)
+	[ -n "$logdev" ] || return 0
+
+	{
+		echo "=== OpenWrt PREINIT reached ($(date -u)) ==="
+		echo "cmdline: $(cat /proc/cmdline 2>/dev/null)"
+		echo "uptime:  $(cat /proc/uptime 2>/dev/null)"
+		echo "meminfo: $(grep -E 'MemTotal|MemFree' /proc/meminfo 2>/dev/null | tr '\n' ' ')"
+	} > "$marker"
+
+	# Copy pstore records from the previous boot (if pstore is available).
+	mkdir -p "$mnt"
+	mount -t pstore pstore "$mnt" 2>/dev/null || true
+	if [ -d "$mnt" ] && [ "$(ls -A "$mnt" 2>/dev/null)" ]; then
+		echo "--- pstore (previous boot) ---" >> "$marker"
+		for f in "$mnt"/*; do
+			[ -f "$f" ] || continue
+			echo "--- $f ---" >> "$marker"
+			cat "$f" >> "$marker" 2>/dev/null
+			echo >> "$marker"
+		done
+		# Do not leave stale panic records for the next attempt.
+		for f in "$mnt"/*; do
+			[ -f "$f" ] && rm -f "$f"
+		done
+	fi
+
+	# mtdblock handles erase-block writing in the kernel, so no external
+	# 'mtd' tool is needed here (it may not be in the initramfs yet).
+	dd if="$marker" of="$logdev" bs=4096 conv=notrunc 2>/dev/null || true
+	sync
+}
+
+boot_hook_add preinit_main bootlog_early

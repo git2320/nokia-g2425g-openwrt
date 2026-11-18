@@ -1,76 +1,107 @@
 #!/bin/sh /etc/rc.common
-# Persist boot diagnostics to the stock "log" mtd partition.
+# Persist boot diagnostics to the stock "log" MTD partition.
 #
-# Why: this board has no usable serial console and the v2 image came up but
-# was unreachable on both Ethernet and WiFi, so the only way to learn *why*
-# is to write the kernel/userspace state to flash from OpenWrt, let the
-# bootloader revert to stock (we never commit during testing), and read the
-# partition back over stock telnet:
+# The board has no usable serial console, and CONFIG_PANIC_TIMEOUT=1 makes
+# the kernel reboot a second after a panic.  Logging therefore has three
+# layers, oldest first:
 #
-#   dd if=/dev/mtd7 bs=128k count=8 | strings | less
+#   1. pstore/ramoops (kernel) writes panic/oops/console records to reserved
+#      RAM -- this survives the reset itself.
+#   2. /lib/preinit/05_bootlog_early copies those records to mtd7 and leaves
+#      a "PREINIT reached" marker before any network/WiFi setup.
+#   3. This script adds a full userspace snapshot (dmesg, logread, network,
+#      wireless, flags) at START=11 and again at +10s / +80s.
 #
-# An early snapshot is written at ~10s (catches probe failures/panics in
-# dmesg) and a settled snapshot at ~80s (network up). The final flash
-# content holds both, early first.
+# If the kernel dies before preinit, only layer 1 has data.  On the next
+# boot (or after CFE reverts to stock) layer 2 copies it to mtd7, where it
+# can be read with:
+#
+#   dd if=/dev/mtd7 bs=128k count=16 2>/dev/null | strings | less
 
 START=11
 
+LOGTAG="OpenWrt boot snapshot"
+
+find_log_mtd_num() {
+	sed -n 's/^mtd\([0-9]*\):.*"log"/\1/p' /proc/mtd 2>/dev/null | head -n1
+}
+
 snapshot() {
-	{
-		echo "=== OpenWrt boot snapshot ($(date)) uptime=$(cut -d' ' -f1 /proc/uptime) ==="
-		echo "--- dmesg ---"
-		dmesg
-		echo "--- cmdline ---"
-		cat /proc/cmdline
-		echo "--- mtd ---"
-		cat /proc/mtd
-		echo "--- bootflag (raw) ---"
-		fp=$(grep '"flag"' /proc/mtd 2>/dev/null | sed 's/:.*//')
-		if [ -n "$fp" ] && command -v hexdump >/dev/null 2>&1; then
-			hexdump -C -n 64 /dev/$fp 2>/dev/null
-		fi
-		echo "--- links ---"
-		ip -o link 2>/dev/null
-		echo "--- netdev state ---"
-		for n in /sys/class/net/*; do
-			echo "## ${n##*/}: operstate=$(cat $n/operstate 2>/dev/null) carrier=$(cat $n/carrier 2>/dev/null) addr=$(cat $n/address 2>/dev/null) speed=$(cat $n/speed 2>/dev/null) device=$(readlink $n/device 2>/dev/null)"
-		done
-		echo "--- counters ---"
-		grep -H . /sys/class/net/*/statistics/rx_packets /sys/class/net/*/statistics/tx_packets 2>/dev/null
-		echo "--- interrupts ---"
-		grep -iE 'qdma|gsw|eth' /proc/interrupts 2>/dev/null
-		echo "--- modules ---"
-		lsmod 2>/dev/null
-		echo "--- uci network ---"
-		uci show network 2>/dev/null
-		echo "--- wireless ---"
-		uci show wireless 2>/dev/null
-		iw dev 2>/dev/null
-		echo "--- logread ---"
-		logread 2>/dev/null
-	} 2>&1
+	echo "=== $LOGTAG ($(date -u)) uptime=$(cut -d' ' -f1 /proc/uptime 2>/dev/null) ==="
+
+	# Preinit marker and pstore records from previous boots.
+	[ -f /tmp/.bootlog.early ] && cat /tmp/.bootlog.early
+
+	echo "--- cmdline ---"
+	cat /proc/cmdline 2>/dev/null
+	echo "--- dmesg ---"
+	dmesg 2>/dev/null
+	echo "--- logread ---"
+	logread 2>/dev/null
+	echo "--- mtd ---"
+	cat /proc/mtd 2>/dev/null
+	echo "--- bootflag (raw) ---"
+	local fp
+	fp=$(sed -n 's/^mtd\([0-9]*\):.*"flag"/\/dev\/mtd\1/p' /proc/mtd 2>/dev/null | head -n1)
+	if [ -n "$fp" ] && command -v hexdump >/dev/null 2>&1; then
+		hexdump -C -n 64 "$fp" 2>/dev/null
+	fi
+	echo "--- links ---"
+	ip -o link 2>/dev/null
+	ip -o addr 2>/dev/null
+	echo "--- netdev state ---"
+	local n
+	for n in /sys/class/net/*; do
+		echo "## ${n##*/}: operstate=$(cat $n/operstate 2>/dev/null) carrier=$(cat $n/carrier 2>/dev/null) addr=$(cat $n/address 2>/dev/null) speed=$(cat $n/speed 2>/dev/null) device=$(readlink $n/device 2>/dev/null)"
+	done
+	echo "--- counters ---"
+	grep -H . /sys/class/net/*/statistics/rx_packets /sys/class/net/*/statistics/tx_packets 2>/dev/null
+	echo "--- interrupts ---"
+	grep -iE 'qdma|gsw|eth|mt76' /proc/interrupts 2>/dev/null
+	echo "--- modules ---"
+	lsmod 2>/dev/null
+	echo "--- uci network ---"
+	uci show network 2>/dev/null
+	echo "--- wireless ---"
+	uci show wireless 2>/dev/null
+	iw dev 2>/dev/null
+	echo "--- pstore ---"
+	local f
+	for f in /sys/fs/pstore/*; do
+		[ -f "$f" ] || continue
+		echo "## $f"
+		head -c 16384 "$f" 2>/dev/null
+	done
+}
+
+write_snapshot() {
+	local num
+	num=$(find_log_mtd_num)
+	[ -n "$num" ] || return 0
+	snapshot > /tmp/.bootlog.current 2>/dev/null
+	if command -v mtd >/dev/null 2>&1; then
+		mtd write /tmp/.bootlog.current log 2>/dev/null || \
+			dd if=/tmp/.bootlog.current of=/dev/mtdblock$num bs=4096 conv=notrunc 2>/dev/null || true
+	else
+		dd if=/tmp/.bootlog.current of=/dev/mtdblock$num bs=4096 conv=notrunc 2>/dev/null || true
+	fi
+	sync
 }
 
 boot() {
-	# The stock "log" partition; the OpenWrt mtd utility erases it first.
-	[ -n "$(grep '"log"' /proc/mtd 2>/dev/null)" ] || exit 0
+	# No "log" partition -> nothing to do.
+	[ -n "$(find_log_mtd_num)" ] || exit 0
 
-	# Immediate marker: proves userspace started even if it dies within 10s.
-	echo "=== OpenWrt userspace reached ($(date)) cmdline=$(cat /proc/cmdline) ===" > /tmp/.bootlog.probe
-	mtd write /tmp/.bootlog.probe log 2>/dev/null
+	# Full snapshot immediately: if userspace dies at START=12 or later,
+	# this is still on flash.  The background copies below add settled
+	# network/wifi state.
+	write_snapshot
 
-	# Do the waiting snapshots in the background: rc runs boot() functions
-	# with START ordering, and sleeping here would delay every later boot
-	# script (including network setup) by 80 seconds.
 	(
 		sleep 10
-		snapshot > /tmp/.bootlog.early
-		mtd write /tmp/.bootlog.early log 2>/dev/null
-
+		write_snapshot
 		sleep 70
-		snapshot > /tmp/.bootlog.late
-		cat /tmp/.bootlog.early /tmp/.bootlog.late > /tmp/.bootlog.all
-		mtd write /tmp/.bootlog.all log 2>/dev/null
+		write_snapshot
 	) </dev/null >/dev/null 2>&1 &
 }
 
